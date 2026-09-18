@@ -3,6 +3,8 @@ name = "adcore"
 version = "0.1.0"
 description = "PatchCore, MVTec AD loading, anomaly-detection metrics, evaluation and few-shot experiments"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.10"
 dependencies = [
     "lightning>=2.5",

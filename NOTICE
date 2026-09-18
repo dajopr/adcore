@@ -1,0 +1,15 @@
+adcore
+Copyright 2026 The adcore contributors
+
+This product includes software from anomalib
+(https://github.com/open-edge-platform/anomalib), version 2.2.0,
+Copyright (C) 2022-2025 Intel Corporation, licensed under the Apache License 2.0.
+
+The following files contain code adapted from anomalib:
+
+  src/adcore/patchcore.py
+    anomalib.models.image.patchcore.torch_model.PatchcoreModel
+
+  src/adcore/coreset.py
+    anomalib.models.components.dimensionality_reduction.random_projection
+    anomalib.models.components.sampling.k_center_greedy

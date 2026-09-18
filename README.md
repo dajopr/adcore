@@ -1,5 +1,7 @@
 # adcore
 
+A utility library for anomaly detection.
+
 Anomaly detection on Lightning: PatchCore, MVTec AD loading, metrics, evaluation and
 few-shot experiments.
 
@@ -7,8 +9,8 @@ few-shot experiments.
 | --- | --- |
 | `adcore.module` | `AnomalyModule`: a `LightningModule` whose val/test steps collect predictions and score them per category and defect type |
 | `adcore.detectors` | `PatchCore`: extractor + memory bank, fitted in one optimizer-free epoch |
-| `adcore.patchcore` | `PatchcoreModel`: memory bank + nearest-neighbour scoring on an already extracted `(B, C, H, W)` embedding |
-| `adcore.coreset` | k-center greedy coreset subsampling |
+| `adcore.patchcore` | `PatchcoreModel`: memory bank + nearest-neighbour scoring on an already extracted `(B, C, H, W)` embedding (adapted from [anomalib](https://github.com/open-edge-platform/anomalib)) |
+| `adcore.coreset` | k-center greedy coreset subsampling (adapted from [anomalib](https://github.com/open-edge-platform/anomalib)) |
 | `adcore.extractors` | `TimmExtractor`: frozen timm backbone → patch embedding |
 | `adcore.datamodule` | `MVTecDataModule` (few-shot, optional anomalous training frames), `CachedDataset` |
 | `adcore.mvtec` | `MVTecDataset`, `few_shot_subset`, `split_by_defect_type` |
@@ -121,3 +123,16 @@ summarize(results)               # mean/std per metric, plus the category mean
 - Each category's test split is decoded once and held in memory for all its runs.
 - Metrics are computed at `image_size` resolution (default 224×224).
 - In `summarize`, the `"mean"` category averages categories within each seed first, so its std is the seed variance of the benchmark mean.
+
+## Acknowledgements
+
+`adcore.patchcore` and `adcore.coreset` contain code adapted from
+[anomalib](https://github.com/open-edge-platform/anomalib) 2.2.0
+(`PatchcoreModel`, `KCenterGreedy` and `SparseRandomProjection`),
+Copyright (C) 2022-2025 Intel Corporation, licensed under the
+[Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
+The vendored sections are marked in the source; see [NOTICE](NOTICE).
+
+## License
+
+adcore is licensed under the [Apache License 2.0](LICENSE).
