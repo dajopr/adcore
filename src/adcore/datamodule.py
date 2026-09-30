@@ -17,6 +17,8 @@ import lightning as L
 from torch.utils.data import ConcatDataset, DataLoader, Dataset, Subset
 
 from adcore.mvtec import (
+    MVTEC,
+    DatasetSpec,
     MVTecDataset,
     default_transform,
     few_shot_subset,
@@ -63,6 +65,7 @@ class MVTecDataModule(L.LightningDataModule):
             split intact.
         image_size: Used to build the default transform.
         transform: A torchvision v2 transform over ``(image, mask)``, applied to every split.
+        spec: The dataset's layout, e.g. `adcore.mvtec.MVTEC` or `adcore.mvtec.VISA`.
         test_dataset: A prebuilt test split (e.g. a `CachedDataset`) to use instead of
             reading one; experiments pass the same cached split to every run.
         batch_size, num_workers: DataLoader settings. A `CachedDataset` is read with
@@ -81,6 +84,7 @@ class MVTecDataModule(L.LightningDataModule):
         test_dataset: MVTecDataset | CachedDataset | None = None,
         batch_size: int = 32,
         num_workers: int = 4,
+        spec: DatasetSpec = MVTEC,
     ) -> None:
         super().__init__()
         self.root = Path(root)
@@ -89,6 +93,7 @@ class MVTecDataModule(L.LightningDataModule):
         self.seed = seed
         self.anomalous_fraction = anomalous_fraction
         self.transform = transform or default_transform(tuple(image_size))
+        self.spec = spec
         self.batch_size = batch_size
         self.num_workers = num_workers
         self._full_test = test_dataset
@@ -99,9 +104,11 @@ class MVTecDataModule(L.LightningDataModule):
     def setup(self, stage: str | None = None) -> None:
         if self.test is not None:
             return
-        train = MVTecDataset(self.root, self.category, "train", self.transform)
+        train = MVTecDataset(
+            self.root, self.category, "train", self.transform, spec=self.spec
+        )
         test = self._full_test or MVTecDataset(
-            self.root, self.category, "test", self.transform
+            self.root, self.category, "test", self.transform, spec=self.spec
         )
         self.reference = few_shot_subset(train, self.shots, self.seed)
         if self.anomalous_fraction > 0:

@@ -1,6 +1,8 @@
-"""MVTec AD as a plain ``torch.utils.data.Dataset`` yielding dicts, so a bare ``DataLoader`` works."""
+"""MVTec AD (and datasets laid out like it, such as VisA 1cls) as a plain
+``torch.utils.data.Dataset`` yielding dicts, so a bare ``DataLoader`` works."""
 
 import zlib
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -31,6 +33,47 @@ CATEGORIES = (
     "zipper",
 )
 
+VISA_CATEGORIES = (
+    "candle",
+    "capsules",
+    "cashew",
+    "chewinggum",
+    "fryum",
+    "macaroni1",
+    "macaroni2",
+    "pcb1",
+    "pcb2",
+    "pcb3",
+    "pcb4",
+    "pipe_fryum",
+)
+
+
+@dataclass(frozen=True)
+class DatasetSpec:
+    """Where a dataset in the MVTec layout keeps its images and masks.
+
+    Every such dataset has ``<category>/{train,test}/<defect_type>/<image>`` and, for each
+    anomalous test image, a mask at ``<category>/ground_truth/<defect_type>/<mask_name>``.
+
+    Args:
+        name: Recorded in experiment configs.
+        image_glob: Matches the images inside a defect-type directory.
+        mask_name: Mask filename, formatted with the image's ``stem``.
+        categories: Every category, in the dataset's canonical order.
+    """
+
+    name: str
+    image_glob: str
+    mask_name: str
+    categories: tuple[str, ...]
+
+
+# /data/shared-data/public_datasets/raw/MVTec on this machine.
+MVTEC = DatasetSpec("mvtec", "*.png", "{stem}_mask.png", CATEGORIES)
+# VisA in its 1cls layout: /data/shared-data/public_datasets/raw/visa/visa_pytorch.
+VISA = DatasetSpec("visa", "*.JPG", "{stem}.png", VISA_CATEGORIES)
+
 
 def default_transform(image_size: tuple[int, int] = (224, 224)) -> T.Compose:
     """Resize + ImageNet normalisation.
@@ -47,13 +90,15 @@ def default_transform(image_size: tuple[int, int] = (224, 224)) -> T.Compose:
     )
 
 
-def find_records(root: Path, categories: list[str], split: str) -> list[dict]:
+def find_records(
+    root: Path, categories: list[str], split: str, spec: DatasetSpec = MVTEC
+) -> list[dict]:
     """Every frame of ``split``, sorted by (category, defect_type, filename)."""
     records = []
     for category in categories:
         for defect_dir in sorted((root / category / split).iterdir()):
             defect_type = defect_dir.name
-            for image_path in sorted(defect_dir.glob("*.png")):
+            for image_path in sorted(defect_dir.glob(spec.image_glob)):
                 mask_path = ""
                 if defect_type != "good":
                     mask_path = str(
@@ -61,7 +106,7 @@ def find_records(root: Path, categories: list[str], split: str) -> list[dict]:
                         / category
                         / "ground_truth"
                         / defect_type
-                        / f"{image_path.stem}_mask.png"
+                        / spec.mask_name.format(stem=image_path.stem)
                     )
                 records.append(
                     {
@@ -86,6 +131,7 @@ class MVTecDataset(Dataset):
         split: ``"train"`` or ``"test"``.
         transform: A torchvision v2 transform taking ``(image, mask)``.
         image_size: Only used to build the default transform.
+        spec: The dataset's layout, e.g. `MVTEC` or `VISA`.
     """
 
     def __init__(
@@ -95,6 +141,7 @@ class MVTecDataset(Dataset):
         split: str = "test",
         transform=None,
         image_size: tuple[int, int] = (224, 224),
+        spec: DatasetSpec = MVTEC,
     ) -> None:
         root = Path(root)
         if category is None:
@@ -104,7 +151,8 @@ class MVTecDataset(Dataset):
         else:
             categories = list(category)
         self.transform = transform or default_transform(image_size)
-        self.records = find_records(root, categories, split)
+        self.spec = spec
+        self.records = find_records(root, categories, split, spec)
 
     def __len__(self) -> int:
         return len(self.records)

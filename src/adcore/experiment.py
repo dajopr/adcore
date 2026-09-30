@@ -45,7 +45,7 @@ from tqdm.auto import tqdm
 from adcore.datamodule import CachedDataset, MVTecDataModule
 from adcore.evaluation import METRICS
 from adcore.module import AnomalyModule
-from adcore.mvtec import CATEGORIES, MVTecDataset, default_transform
+from adcore.mvtec import MVTEC, DatasetSpec, MVTecDataset, default_transform
 
 
 @dataclass(frozen=True)
@@ -86,14 +86,16 @@ def _quiet_lightning():
 
 
 class FewShotExperiment:
-    """Every combination of ``categories`` x ``shots`` x ``seeds`` on MVTec AD.
+    """Every combination of ``categories`` x ``shots`` x ``seeds`` on one dataset.
+
+    Run one experiment per dataset, each with its own ``output_dir``.
 
     Args:
-        root: MVTec AD directory, one subdirectory per category.
+        root: Dataset directory, one subdirectory per category.
         module_factory: Builds a fresh, unfitted `AnomalyModule` for a `Run`. It gets the
             run so a module can depend on its category (e.g. text prompts). Close over a
             shared extractor rather than building one per run.
-        categories: Defaults to all fifteen.
+        categories: Defaults to all of ``spec.categories``.
         shots: Defect-free training frames per run; None means all of them.
         seeds: One run per seed. The seed picks the shots (and anomalous training
             frames) and goes to ``L.seed_everything`` before the module is built.
@@ -108,6 +110,7 @@ class FewShotExperiment:
         image_size: Resolution images and masks are resized to, and so the resolution
             pixel metrics are computed at. Ignored when ``transform`` is given.
         transform: A torchvision v2 transform over ``(image, mask)``.
+        spec: The dataset's layout, e.g. `adcore.mvtec.MVTEC` or `adcore.mvtec.VISA`.
         cache_test_set: Decode each category's test split once and reuse it for every run.
     """
 
@@ -127,10 +130,14 @@ class FewShotExperiment:
         batch_size: int = 32,
         num_workers: int = 4,
         cache_test_set: bool = True,
+        spec: DatasetSpec = MVTEC,
     ) -> None:
         self.root = Path(root)
         self.module_factory = module_factory
-        self.categories = list(categories) if categories is not None else list(CATEGORIES)
+        self.spec = spec
+        self.categories = (
+            list(categories) if categories is not None else list(spec.categories)
+        )
         self.shots = list(shots)
         self.seeds = list(seeds)
         self.output_dir = Path(output_dir) if output_dir is not None else None
@@ -159,6 +166,7 @@ class FewShotExperiment:
     def config(self) -> dict[str, Any]:
         return {
             "root": str(self.root),
+            "spec": self.spec.name,
             "categories": self.categories,
             "shots": self.shots,
             "seeds": self.seeds,
@@ -221,7 +229,9 @@ class FewShotExperiment:
             test = None
             if self.cache_test_set:
                 test = CachedDataset(
-                    MVTecDataset(self.root, category, "test", self.transform),
+                    MVTecDataset(
+                        self.root, category, "test", self.transform, spec=self.spec
+                    ),
                     num_workers=self.num_workers,
                     batch_size=self.batch_size,
                 )
@@ -240,6 +250,7 @@ class FewShotExperiment:
             seed=run.seed,
             anomalous_fraction=self.anomalous_fraction,
             transform=self.transform,
+            spec=self.spec,
             test_dataset=test_dataset,
             batch_size=self.batch_size,
             num_workers=self.num_workers,
