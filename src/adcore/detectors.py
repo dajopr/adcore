@@ -23,12 +23,21 @@ from adcore.patchcore import PatchcoreModel, reshape_embedding
 
 
 def upsample_and_blur(
-    patch_scores: torch.Tensor, size: tuple[int, int], sigma: float
+    patch_scores: torch.Tensor,
+    size: tuple[int, int],
+    sigma: float,
+    kernel_size: int | None = None,
 ) -> torch.Tensor:
-    """PatchCore's anomaly map: bilinear upsampling, then Gaussian smoothing."""
+    """PatchCore's anomaly map: bilinear upsampling, then Gaussian smoothing.
+
+    ``kernel_size`` None is the full kernel, ``2 * int(4 * sigma + 0.5) + 1`` (33 at
+    sigma 4). SubspaceAD uses ``cv2.GaussianBlur(map, (3, 3), 4)``, i.e. ``kernel_size=3``
+    — close to a 3x3 box filter. Upsampling and reflect padding match cv2's
+    ``INTER_LINEAR`` and ``BORDER_REFLECT_101``.
+    """
     anomaly_map = F.interpolate(patch_scores, size=size, mode="bilinear", align_corners=False)
     if sigma > 0:
-        kernel = 2 * int(4 * sigma + 0.5) + 1
+        kernel = kernel_size or 2 * int(4 * sigma + 0.5) + 1
         anomaly_map = gaussian_blur(anomaly_map, kernel_size=[kernel, kernel], sigma=[sigma])
     return anomaly_map
 
@@ -44,6 +53,8 @@ class PatchCore(AnomalyModule):
             every patch, the usual choice when few shots make the bank small anyway.
         num_neighbors: Neighbours used to reweight the image score; 1 is the raw max.
         blur_sigma: Gaussian smoothing of the upsampled anomaly map; 0 disables it.
+        blur_kernel_size: Odd kernel size for that smoothing; None is the full kernel.
+            3 matches SubspaceAD.
         **kwargs: Passed to `AnomalyModule`.
     """
 
@@ -53,6 +64,7 @@ class PatchCore(AnomalyModule):
         sampling_ratio: float | int = 0.1,
         num_neighbors: int = 9,
         blur_sigma: float = 4.0,
+        blur_kernel_size: int | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -60,6 +72,7 @@ class PatchCore(AnomalyModule):
         self.model = PatchcoreModel(num_neighbors=num_neighbors)
         self.sampling_ratio = sampling_ratio
         self.blur_sigma = blur_sigma
+        self.blur_kernel_size = blur_kernel_size
         self._embeddings: list[torch.Tensor] = []
 
     def configure_optimizers(self) -> None:
@@ -84,7 +97,10 @@ class PatchCore(AnomalyModule):
         output = self.model(self.extractor(images))
         return {
             "anomaly_map": upsample_and_blur(
-                output["anomaly_map"], tuple(images.shape[-2:]), self.blur_sigma
+                output["anomaly_map"],
+                tuple(images.shape[-2:]),
+                self.blur_sigma,
+                self.blur_kernel_size,
             ),
             "pred_score": output["pred_score"],
         }
