@@ -1,7 +1,13 @@
 """Core anomaly detection on Lightning: PatchCore, MVTec AD / VisA loading, metrics, evaluation
 and few-shot experiments."""
 
-from adcore.datamodule import CachedDataset, MVTecDataModule
+from adcore.datamodule import (
+    AugmentedSupport,
+    AugmentSpec,
+    CachedDataset,
+    MVTecDataModule,
+    default_rotation,
+)
 from adcore.detectors import PatchCore, upsample_and_blur
 from adcore.evaluation import EvalResult, Predictions, evaluate, score
 from adcore.experiment import FewShotExperiment, Run, summarize, table
@@ -24,6 +30,8 @@ from adcore.patchcore import PatchcoreModel
 __all__ = [
     "ADMetrics",
     "AnomalyModule",
+    "AugmentSpec",
+    "AugmentedSupport",
     "CATEGORIES",
     "CachedDataset",
     "DatasetSpec",
@@ -40,6 +48,7 @@ __all__ = [
     "VISA",
     "VISA_CATEGORIES",
     "compute_metrics",
+    "default_rotation",
     "default_transform",
     "evaluate",
     "few_shot_subset",

@@ -42,7 +42,7 @@ from lightning.pytorch.loggers import CSVLogger
 from lightning.pytorch.utilities.model_helpers import is_overridden
 from tqdm.auto import tqdm
 
-from adcore.datamodule import CachedDataset, MVTecDataModule
+from adcore.datamodule import AugmentSpec, CachedDataset, MVTecDataModule
 from adcore.evaluation import METRICS
 from adcore.module import AnomalyModule
 from adcore.mvtec import MVTEC, DatasetSpec, MVTecDataset, default_transform
@@ -113,6 +113,8 @@ class FewShotExperiment:
         train_transform: Replaces ``transform`` for the defect-free training frames; the
             test split keeps ``transform``.
         spec: The dataset's layout, e.g. `adcore.mvtec.MVTEC` or `adcore.mvtec.VISA`.
+        support_aug: Augmented views of each few-shot frame; see
+            `adcore.datamodule.AugmentedSupport`. Full-shot runs ignore it.
         cache_test_set: Decode each category's test split once and reuse it for every run.
     """
 
@@ -134,6 +136,7 @@ class FewShotExperiment:
         cache_test_set: bool = True,
         train_transform=None,
         spec: DatasetSpec = MVTEC,
+        support_aug: AugmentSpec | None = None,
     ) -> None:
         self.root = Path(root)
         self.module_factory = module_factory
@@ -149,6 +152,7 @@ class FewShotExperiment:
         self.image_size = tuple(image_size)
         self.transform = transform or default_transform(self.image_size)
         self.train_transform = train_transform or self.transform
+        self.support_aug = support_aug
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.cache_test_set = cache_test_set
@@ -178,6 +182,7 @@ class FewShotExperiment:
             "image_size": list(self.image_size),
             "transform": repr(self.transform),
             "train_transform": repr(self.train_transform),
+            "support_aug": repr(self.support_aug),
             "trainer_kwargs": repr(self.trainer_kwargs),
         }
 
@@ -257,6 +262,7 @@ class FewShotExperiment:
             transform=self.transform,
             train_transform=self.train_transform,
             spec=self.spec,
+            support_aug=self.support_aug,
             test_dataset=test_dataset,
             batch_size=self.batch_size,
             num_workers=self.num_workers,

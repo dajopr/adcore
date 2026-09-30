@@ -127,8 +127,9 @@ def find_records(
 
 class MVTecDataset(Dataset):
     """MVTec AD frames as dicts with keys ``image`` (float32 CHW), ``mask`` (float32 1HW, 0/1),
-    ``label`` (0 good, 1 anomalous), ``category``, ``defect_type``, ``image_path`` and
-    ``mask_path`` (``""`` for good frames).
+    ``label`` (0 good, 1 anomalous), ``category``, ``defect_type``, ``image_path``,
+    ``mask_path`` (``""`` for good frames) and ``view`` (always 0; see
+    `adcore.datamodule.AugmentedSupport`).
 
     Args:
         root: Directory holding one subdirectory per category.
@@ -162,25 +163,31 @@ class MVTecDataset(Dataset):
     def __len__(self) -> int:
         return len(self.records)
 
-    def __getitem__(self, idx: int) -> dict:
+    def load(self, idx: int) -> tuple[tv_tensors.Image, tv_tensors.Mask]:
+        """Frame ``idx`` decoded at full resolution, untransformed: uint8 image, 0/1 mask."""
         record = self.records[idx]
-
         image = np.array(Image.open(record["image_path"]).convert("RGB"))
         if record["mask_path"]:
             mask = (np.array(Image.open(record["mask_path"])) > 0).astype(np.uint8)
         else:
             mask = np.zeros(image.shape[:2], dtype=np.uint8)
+        return tv_tensors.Image(image.transpose(2, 0, 1)), tv_tensors.Mask(mask)
 
+    def item(
+        self, idx: int, image: tv_tensors.Image, mask: tv_tensors.Mask, transform=None
+    ) -> dict:
+        """The item for frame ``idx`` from a loaded (possibly augmented) image and mask."""
         # One call for the pair, so a random transform draws the same parameters for both.
-        image, mask = self.transform(
-            tv_tensors.Image(image.transpose(2, 0, 1)), tv_tensors.Mask(mask)
-        )
-
+        image, mask = (transform or self.transform)(image, mask)
         return {
-            **record,
+            **self.records[idx],
             "image": image.as_subclass(torch.Tensor),
             "mask": mask.as_subclass(torch.Tensor).unsqueeze(0),
+            "view": 0,
         }
+
+    def __getitem__(self, idx: int) -> dict:
+        return self.item(idx, *self.load(idx))
 
 
 def split_by_defect_type(
