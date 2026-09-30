@@ -12,7 +12,7 @@ from adcore.detectors import PatchCore, upsample_and_blur
 from adcore.evaluation import EvalResult, Predictions, evaluate, score
 from adcore.experiment import FewShotExperiment, Run, summarize, table
 from adcore.extractors import TimmExtractor
-from adcore.metrics import ADMetrics, compute_metrics
+from adcore.metrics import ADMetrics, compute_metrics, image_aupr, region_structure
 from adcore.module import AnomalyModule
 from adcore.mvtec import (
     CATEGORIES,
@@ -52,8 +52,10 @@ __all__ = [
     "default_transform",
     "evaluate",
     "few_shot_subset",
+    "image_aupr",
     "score",
     "split_by_defect_type",
+    "region_structure",
     "summarize",
     "table",
     "upsample_and_blur",

@@ -24,15 +24,18 @@ import torch.nn.functional as F
 from adcore.metrics import (
     DEFAULT_FPR_LIMIT,
     DEFAULT_N_BINS,
+    DEFAULT_PRO_CONNECTIVITY,
     build_pixel_histograms,
+    image_aupr,
     image_auroc,
     pixel_metrics,
+    region_structure,
 )
 
 if TYPE_CHECKING:
     from adcore.module import AnomalyModule
 
-METRICS = ("image_auroc", "pixel_auroc", "pixel_aupr", "aupro")
+METRICS = ("image_auroc", "image_aupr", "pixel_auroc", "pixel_aupr", "aupro")
 
 
 @dataclass
@@ -127,9 +130,12 @@ def score(
     per_defect: bool = True,
     n_bins: int = DEFAULT_N_BINS,
     fpr_limit: float = DEFAULT_FPR_LIMIT,
+    pro_connectivity: int = DEFAULT_PRO_CONNECTIVITY,
 ) -> pd.DataFrame:
     """Metrics per category over its whole test set (``defect_type == "all"``) and, with
     ``per_defect``, over each defect type together with the category's good frames.
+
+    ``pro_connectivity`` (4 or 8) is how AUPRO splits a mask into defect regions.
 
     Histograms are built per category so every category gets the full bin resolution
     over its own score range.
@@ -141,6 +147,7 @@ def score(
             predictions.masks[in_category],
             predictions.anomaly_maps[in_category],
             n_bins=n_bins,
+            structure=region_structure(pro_connectivity),
         )
         defect_types = predictions.defect_types[in_category]
         labels = predictions.labels[in_category]
@@ -167,6 +174,7 @@ def score(
                     "n_images": len(rows_in),
                     "n_anomalous": int(labels[rows_in].sum()),
                     "image_auroc": image_auroc(labels[rows_in], image_scores[rows_in]),
+                    "image_aupr": image_aupr(labels[rows_in], image_scores[rows_in]),
                     "pixel_auroc": pixel.auroc,
                     "pixel_aupr": pixel.aupr,
                     "aupro": pixel.aupro,

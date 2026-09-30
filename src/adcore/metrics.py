@@ -1,4 +1,4 @@
-"""Anomaly-detection metrics: image AUROC, and pixel AUROC / AUPR / AUPRO.
+"""Anomaly-detection metrics: image AUROC / AUPR, and pixel AUROC / AUPR / AUPRO.
 
 Ported from `synval.metrics.pixel` (the image-level AUROC is new here). The pixel scores
 are re-aggregations of per-image score histograms.
@@ -34,7 +34,7 @@ from typing import Literal, NamedTuple
 
 import numpy as np
 from scipy import ndimage
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import average_precision_score, roc_auc_score
 
 # Measured against sklearn on a real 22M-pixel bottle run: binned AUROC lands within
 # 3e-8 and average precision within 5e-5, roughly 20x tighter than the 1e-3 that matters
@@ -51,6 +51,19 @@ DEFAULT_FPR_LIMIT: float = 0.3
 # max-pool (8-connected) run for a fixed 1000 iterations, which at 384px had not
 # converged — so it matched neither convention and over-segmented.
 REGION_STRUCTURE: np.ndarray | None = None
+
+# SubspaceAD and anomalib label regions 8-connected; pass 8 to compare with them.
+DEFAULT_PRO_CONNECTIVITY: int = 4
+
+
+def region_structure(connectivity: int) -> np.ndarray | None:
+    """The `ndimage.label` structure for 4- or 8-connected defect regions."""
+    if connectivity == 4:
+        return REGION_STRUCTURE
+    if connectivity == 8:
+        return np.ones((3, 3), dtype=int)
+    raise ValueError(f"connectivity must be 4 or 8, got {connectivity}")
+
 
 # Quantile edges are estimated from a strided sample; exact quantiles of ~39M values cost
 # more than every metric downstream of them.
@@ -292,11 +305,23 @@ def image_auroc(labels: np.ndarray, scores: np.ndarray) -> float:
     return float(roc_auc_score(labels, np.asarray(scores, dtype=np.float64).ravel()))
 
 
+def image_aupr(labels: np.ndarray, scores: np.ndarray) -> float:
+    """Image-level average precision (sklearn's step-sum AUPR); NaN when `labels` holds
+    only one class."""
+    labels = np.asarray(labels).ravel().astype(int)
+    if len(np.unique(labels)) < 2:
+        return float("nan")
+    return float(
+        average_precision_score(labels, np.asarray(scores, dtype=np.float64).ravel())
+    )
+
+
 class ADMetrics(NamedTuple):
     image_auroc: float
     pixel_auroc: float
     pixel_aupr: float
     aupro: float
+    image_aupr: float  # last, so positional unpacking of the first four still works
 
 
 def compute_metrics(
@@ -307,18 +332,24 @@ def compute_metrics(
     *,
     n_bins: int = DEFAULT_N_BINS,
     fpr_limit: float = DEFAULT_FPR_LIMIT,
+    pro_connectivity: int = DEFAULT_PRO_CONNECTIVITY,
 ) -> ADMetrics:
-    """Image AUROC plus pixel AUROC / AUPR / AUPRO over one eval set in one call.
+    """Image AUROC / AUPR plus pixel AUROC / AUPR / AUPRO over one eval set in one call.
 
     To score several subsets of the same set, build the histograms once with
     `build_pixel_histograms` and call `pixel_metrics` with each subset's rows instead.
     """
-    pixel = pixel_metrics(
-        build_pixel_histograms(masks, anomaly_maps, n_bins=n_bins), fpr_limit=fpr_limit
+    histograms = build_pixel_histograms(
+        masks,
+        anomaly_maps,
+        n_bins=n_bins,
+        structure=region_structure(pro_connectivity),
     )
+    pixel = pixel_metrics(histograms, fpr_limit=fpr_limit)
     return ADMetrics(
         image_auroc=image_auroc(labels, image_scores),
         pixel_auroc=pixel.auroc,
         pixel_aupr=pixel.aupr,
         aupro=pixel.aupro,
+        image_aupr=image_aupr(labels, image_scores),
     )

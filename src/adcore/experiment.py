@@ -287,6 +287,7 @@ class FewShotExperiment:
             test_seconds = perf_counter() - start
 
         result = module.test_result
+        pro_connectivity = module.pro_connectivity
         del module, trainer
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -297,6 +298,8 @@ class FewShotExperiment:
                 "n_train": len(datamodule.train),
                 "n_anomalous_train": len(datamodule.train) - len(datamodule.reference),
                 **row,
+                # Recorded per row: `aupro` means different things at 4 and 8.
+                "pro_connectivity": pro_connectivity,
                 "fit_seconds": fit_seconds,
                 "test_seconds": test_seconds,
             }
@@ -335,7 +338,11 @@ def results_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
         return frame
     frame["shots"] = frame["shots"].astype("Int64")  # <NA> is full-shot
     for metric in METRICS:
-        frame[metric] = frame[metric].astype(float)
+        # Rows from before a metric existed lack it.
+        frame[metric] = frame[metric].astype(float) if metric in frame else np.nan
+    if "pro_connectivity" in frame:
+        # Rows from before the option existed were 4-connected.
+        frame["pro_connectivity"] = frame["pro_connectivity"].fillna(4).astype(int)
     return frame
 
 

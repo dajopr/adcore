@@ -25,7 +25,12 @@ from adcore.evaluation import (
     PredictionCollector,
     score,
 )
-from adcore.metrics import DEFAULT_FPR_LIMIT, DEFAULT_N_BINS
+from adcore.metrics import (
+    DEFAULT_FPR_LIMIT,
+    DEFAULT_N_BINS,
+    DEFAULT_PRO_CONNECTIVITY,
+    region_structure,
+)
 
 
 class AnomalyModule(L.LightningModule):
@@ -35,6 +40,8 @@ class AnomalyModule(L.LightningModule):
         per_defect: Also score each defect type (with the good frames).
         n_bins: Histogram bins for the pixel metrics.
         fpr_limit: FPR limit for AUPRO.
+        pro_connectivity: 4 (MVTec's official convention) or 8 (SubspaceAD, anomalib)
+            connected defect regions for AUPRO.
     """
 
     def __init__(
@@ -42,11 +49,14 @@ class AnomalyModule(L.LightningModule):
         per_defect: bool = True,
         n_bins: int = DEFAULT_N_BINS,
         fpr_limit: float = DEFAULT_FPR_LIMIT,
+        pro_connectivity: int = DEFAULT_PRO_CONNECTIVITY,
     ) -> None:
         super().__init__()
+        region_structure(pro_connectivity)  # fail at construction, not after testing
         self.per_defect = per_defect
         self.n_bins = n_bins
         self.fpr_limit = fpr_limit
+        self.pro_connectivity = pro_connectivity
         self.val_result: EvalResult | None = None
         self.test_result: EvalResult | None = None
         self._collectors: dict[str, PredictionCollector] = {}
@@ -80,6 +90,7 @@ class AnomalyModule(L.LightningModule):
             per_defect=self.per_defect,
             n_bins=self.n_bins,
             fpr_limit=self.fpr_limit,
+            pro_connectivity=self.pro_connectivity,
         )
         result = EvalResult(metrics=metrics, predictions=predictions)
 
