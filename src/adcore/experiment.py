@@ -110,6 +110,8 @@ class FewShotExperiment:
         image_size: Resolution images and masks are resized to, and so the resolution
             pixel metrics are computed at. Ignored when ``transform`` is given.
         transform: A torchvision v2 transform over ``(image, mask)``.
+        train_transform: Replaces ``transform`` for the defect-free training frames; the
+            test split keeps ``transform``.
         spec: The dataset's layout, e.g. `adcore.mvtec.MVTEC` or `adcore.mvtec.VISA`.
         cache_test_set: Decode each category's test split once and reuse it for every run.
     """
@@ -130,6 +132,7 @@ class FewShotExperiment:
         batch_size: int = 32,
         num_workers: int = 4,
         cache_test_set: bool = True,
+        train_transform=None,
         spec: DatasetSpec = MVTEC,
     ) -> None:
         self.root = Path(root)
@@ -145,6 +148,7 @@ class FewShotExperiment:
         self.anomalous_fraction = anomalous_fraction
         self.image_size = tuple(image_size)
         self.transform = transform or default_transform(self.image_size)
+        self.train_transform = train_transform or self.transform
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.cache_test_set = cache_test_set
@@ -173,6 +177,7 @@ class FewShotExperiment:
             "anomalous_fraction": self.anomalous_fraction,
             "image_size": list(self.image_size),
             "transform": repr(self.transform),
+            "train_transform": repr(self.train_transform),
             "trainer_kwargs": repr(self.trainer_kwargs),
         }
 
@@ -250,6 +255,7 @@ class FewShotExperiment:
             seed=run.seed,
             anomalous_fraction=self.anomalous_fraction,
             transform=self.transform,
+            train_transform=self.train_transform,
             spec=self.spec,
             test_dataset=test_dataset,
             batch_size=self.batch_size,

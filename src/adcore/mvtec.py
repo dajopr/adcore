@@ -75,15 +75,20 @@ MVTEC = DatasetSpec("mvtec", "*.png", "{stem}_mask.png", CATEGORIES)
 VISA = DatasetSpec("visa", "*.JPG", "{stem}.png", VISA_CATEGORIES)
 
 
-def default_transform(image_size: tuple[int, int] = (224, 224)) -> T.Compose:
+def default_transform(
+    image_size: tuple[int, int] = (224, 224),
+    interpolation: T.InterpolationMode = T.InterpolationMode.BILINEAR,
+) -> T.Compose:
     """Resize + ImageNet normalisation.
 
-    Applied to image and mask together: ``Resize`` uses nearest on a ``Mask``, and
-    ``ConvertImageDtype``/``Normalize`` leave its 0/1 values untouched.
+    Applied to image and mask together: ``Resize`` uses nearest on a ``Mask`` whatever
+    ``interpolation`` says, and ``ConvertImageDtype``/``Normalize`` leave its 0/1 values
+    untouched. Bicubic (SubspaceAD's choice) with antialiasing on a uint8 tensor is close
+    to PIL's bicubic downscale but not identical.
     """
     return T.Compose(
         [
-            T.Resize(image_size),
+            T.Resize(image_size, interpolation=interpolation),
             T.ConvertImageDtype(torch.float32),
             T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
         ]

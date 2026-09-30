@@ -15,6 +15,7 @@ from adcore.mvtec import (
     VISA_CATEGORIES,
     DatasetSpec,
     MVTecDataset,
+    default_transform,
     few_shot_subset,
     split_by_defect_type,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "VISA",
     "VISA_CATEGORIES",
     "compute_metrics",
+    "default_transform",
     "evaluate",
     "few_shot_subset",
     "score",
