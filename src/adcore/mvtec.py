@@ -168,7 +168,8 @@ class MVTecDataset(Dataset):
         record = self.records[idx]
         image = np.array(Image.open(record["image_path"]).convert("RGB"))
         if record["mask_path"]:
-            mask = (np.array(Image.open(record["mask_path"])) > 0).astype(np.uint8)
+            mask = np.array(Image.open(record["mask_path"]).convert("L"))
+            mask = (mask > 0).astype(np.uint8)
         else:
             mask = np.zeros(image.shape[:2], dtype=np.uint8)
         return tv_tensors.Image(image.transpose(2, 0, 1)), tv_tensors.Mask(mask)
