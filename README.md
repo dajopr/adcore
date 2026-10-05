@@ -19,6 +19,7 @@ few-shot experiments.
 | `adcore.experiment` | `FewShotExperiment`: categories × shots × seeds, resumable, plus `summarize` / `table` |
 | `adcore.tracking` | `MLflowTracking`: record sweeps in a local MLflow store; `upload_sweep`, `load_runs` |
 | `adcore.dashboard` | `adcore-dashboard`: Streamlit app comparing sweeps by architecture |
+| `adcore.runner` | `adcore-run`: experiments from Hydra configs, one worker per GPU |
 
 ## Writing a module
 
@@ -129,8 +130,8 @@ summarize(results)               # mean/std per metric, plus the category mean
 ## Tracking and comparing sweeps
 
 Install the extra with `uv sync --extra track` (or `pip install adcore[track]`). It adds
-MLflow, Streamlit and Plotly. Everything stays local in a SQLite file, so no server or
-licence is needed.
+MLflow, Streamlit and Plotly. By default everything stays local in a SQLite file, so no
+server or licence is needed.
 
 ```python
 from adcore import FewShotExperiment, MLflowTracking
@@ -151,12 +152,12 @@ experiment.run()
 - Each sweep is a parent run named after `output_dir`, unless you pass `sweep=`.
 - Each (category, shots, seed) is a nested child run. Its params are `category`, `shots` (`"full"` for all frames), `seed` and `arch`. Its metrics are the whole-test-set row (`image_auroc`, …) plus `defect/<type>/<metric>` for each defect type.
 - Trainable modules also log their training losses to the child run, through Lightning's `MLFlowLogger`.
-- The store is `mlflow.db` in the working directory. Pass `tracking_uri="sqlite:////abs/path/mlflow.db"` to share one store between projects.
+- The store is `$MLFLOW_TRACKING_URI` when it is set, e.g. `http://mlflow-host:5000`; otherwise it is `mlflow.db` in the working directory. Pass `tracking_uri=...` to override either. MLflow reads its credentials (`MLFLOW_TRACKING_USERNAME`, `MLFLOW_TRACKING_PASSWORD`, `MLFLOW_TRACKING_TOKEN`) from the environment itself.
 - `results.jsonl` stays the source of truth for resuming. When a sweep starts tracking, its runs already in `results.jsonl` are copied into MLflow first.
 - To add a sweep that ran before tracking existed, call `upload_sweep("runs/old-sweep", MLflowTracking(experiment="mvtec-fewshot", arch="..."))`. Calling it again adds nothing.
 - `load_runs(uri, experiments=[...])` returns the rows of `results.jsonl` with `arch`, `sweep` and `experiment` columns added. `summarize` and `table` work on any subset of them.
 
-Start the dashboard with `adcore-dashboard [--tracking-uri sqlite:///mlflow.db] [--port 8501]`. It compares by `arch` or by sweep, and has these tabs:
+Start the dashboard with `adcore-dashboard [--tracking-uri URI] [--port 8501]`. The URI defaults to the same store. It compares by `arch` or by sweep, and has these tabs:
 
 - **Overview**: the metric against shots, with the std over seeds as a band.
 - **Per category**: one small plot per category.
@@ -166,6 +167,80 @@ Start the dashboard with `adcore-dashboard [--tracking-uri sqlite:///mlflow.db] 
 - **Cost**: fit and test time per run.
 
 To browse the raw runs, use `mlflow ui --backend-store-uri sqlite:///mlflow.db`.
+
+## Running from configs
+
+Install the extra with `uv sync --extra run` (or `pip install adcore[run]`). It adds Hydra
+on top of `track`. `adcore-run` builds a `FewShotExperiment` from three config groups:
+
+- `model`: architecture, backbone, transforms and Trainer settings.
+- `experiment`: dataset, categories, shots, seeds.
+- `launcher`: `single`, or `gpus` for one worker per GPU.
+
+```bash
+export MVTEC_ROOT=/data/shared-data/public_datasets/raw/MVTec   # VISA_ROOT for visa_fewshot
+export MLFLOW_TRACKING_URI=http://mlflow-host:5000              # optional
+adcore-run model=patchcore_wrn50 experiment=mvtec_fewshot
+adcore-run model=patchcore_wrn50 experiment=visa_fewshot launcher=gpus launcher.devices=[0,1,2,3]
+adcore-run model=patchcore_wrn50 experiment.categories=[bottle] experiment.shots=[1] model.module.num_neighbors=1
+adcore-run -m model=patchcore_wrn50,my_model experiment=mvtec_fewshot   # one model after the other
+adcore-run --cfg job                                                    # print the composed config
+```
+
+The shipped configs live in [src/adcore/conf](src/adcore/conf). `adcore.yaml` documents every top-level key.
+
+### Models from another repository
+
+A downstream repo depends on adcore and keeps its own config directory. The only
+requirement on a model is that it is an `AnomalyModule`:
+
+```
+my-repo/
+  my_models/__init__.py           # class MyDetector(AnomalyModule): ...
+  configs/model/my_detector.yaml
+```
+
+```yaml
+# configs/model/my_detector.yaml
+name: my-detector             # MLflow `arch` and the output directory
+shared:                       # built once per process, passed by name to every module
+  extractor: {_target_: adcore.TimmExtractor, model_name: vit_base_patch14_dinov2, out_indices: [8]}
+module:                       # built fresh for every run
+  _target_: my_models.MyDetector
+  lr: 1.0e-4
+image_size: [448, 448]
+transform: null               # or a torchvision v2 transform, e.g. {_target_: torchvision.transforms.v2.Compose, transforms: [...]}
+train_transform: null
+support_aug: null             # or {_target_: adcore.AugmentSpec, n_views: 30}
+trainer: {max_epochs: 5}
+```
+
+```bash
+cd my-repo && adcore-run --config-dir configs model=my_detector experiment=mvtec_fewshot
+```
+
+- If the module's constructor has a `run` parameter, it gets the `adcore.Run` (category, shots, seed), e.g. for per-category text prompts.
+- `--config-dir` can also add `experiment/` or `launcher/` configs. A repo that prefers its own entrypoint can call `adcore.runner.run(cfg)` from its `@hydra.main`, putting `hydra: {searchpath: [pkg://adcore.conf]}` and `- adcore` in its primary config's defaults.
+- `model.trainer` overrides `experiment.trainer`. Both override the defaults of `FewShotExperiment`.
+
+### Output, resuming, tracking
+
+- Each (experiment, model) writes to `runs/<experiment.name>/<model.name>/`; set `output_root` or `output_dir` to move it. Hydra's own `.hydra/` and `adcore.log` go there as well.
+- Rerunning the same command resumes, and a wider grid only runs what is new.
+- `config.json` records a hash of the model config and of the experiment settings, leaving out the grid and loader settings. If you change those settings and run into the same directory, the run stops with an error instead of mixing results. Pass `force=true` to add to it anyway.
+- Tracking is on by default: the MLflow experiment is `experiment.name` and `arch` is `model.name`. Every key of the model config is logged as a `model.*` param, e.g. `model.shared.extractor.model_name`. Turn it off with `tracking.enabled=false`.
+
+### Several GPUs
+
+`launcher=gpus` uses every visible GPU. `launcher.devices=[0,2]` picks some by index into
+`CUDA_VISIBLE_DEVICES`, and `launcher.workers_per_device=2` puts two workers on each.
+
+- Each worker is a spawned process that sees only its GPU.
+- Workers take whole categories off a queue, so each category's test split is still decoded once. When there are fewer categories than workers, the queue holds (category, shots) pairs instead.
+- Runs are split across GPUs, never one run across several. A run's results don't depend on which worker ran it.
+- The main process alone writes `results.jsonl`, so resuming works as before. A unit that fails is reported at the end, and the other units still finish.
+- Against a tracking server (`http(s)://`, or a database such as PostgreSQL), workers log their runs to MLflow themselves, training curves included. A SQLite store can't take several writers. With one, the main process records each run's final metrics and there are no training curves in MLflow, though they stay in `logs/`.
+- Every worker loads the backbone once, which takes a few seconds. For a handful of short runs, one GPU is faster.
 
 ## Acknowledgements
 
