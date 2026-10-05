@@ -1,0 +1,11 @@
+name: visa-fewshot  # MLflow experiment, and the output directory
+root: ${oc.env:VISA_ROOT}
+spec: visa           # mvtec | visa | {_target_: adcore.DatasetSpec, ...}
+categories: null     # null = every category of the spec
+shots: [1, 2, 4, 8]  # null in the list = every training frame
+seeds: [0, 1, 2]
+anomalous_fraction: 0.0
+batch_size: 32
+num_workers: 4
+cache_test_set: true
+trainer: {}          # Trainer kwargs for every model

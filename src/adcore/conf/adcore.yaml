@@ -1,0 +1,33 @@
+# adcore-run's primary config. Pick one of each group:
+#   adcore-run model=patchcore_wrn50 experiment=mvtec_fewshot launcher=gpus
+# A downstream repo adds its own groups with --config-dir (see the README).
+defaults:
+  - model: patchcore_wrn50
+  - experiment: mvtec_fewshot
+  - launcher: single
+  - _self_
+
+# One directory per (experiment, model): rerunning resumes it.
+output_root: runs
+output_dir: ${output_root}/${experiment.name}/${model.name}
+# Resume even though model/experiment settings changed since the directory was made.
+force: false
+progress: true
+
+tracking:
+  enabled: true
+  experiment: ${experiment.name}
+  arch: ${model.name}
+  tracking_uri: null  # null: $MLFLOW_TRACKING_URI, else sqlite:///mlflow.db
+  sweep: null         # null: the name of output_dir
+  tags: {}
+
+hydra:
+  job:
+    name: adcore
+    chdir: false
+  run:
+    dir: ${output_dir}
+  sweep:
+    dir: ${output_root}
+    subdir: ${experiment.name}/${model.name}

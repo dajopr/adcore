@@ -1,0 +1,3 @@
+# One worker process per GPU slot, each taking whole categories off a queue.
+devices: [0]  # or a list of indices into the visible GPUs, e.g. [0, 2, 3]
+workers_per_device: 1

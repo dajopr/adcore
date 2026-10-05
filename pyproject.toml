@@ -25,10 +25,15 @@ track = [
     "plotly>=6",
     "streamlit>=1.50",
 ]
+run = [
+    "adcore[track]",
+    "hydra-core>=1.3",
+]
 
 [project.scripts]
 adcore-convert-visa = "adcore.convert_visa:main"
 adcore-dashboard = "adcore.dashboard:main"
+adcore-run = "adcore.runner:main"
 
 [build-system]
 requires = ["hatchling"]

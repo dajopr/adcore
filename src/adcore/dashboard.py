@@ -1,6 +1,6 @@
 """Streamlit dashboard comparing few-shot sweeps recorded with `adcore.tracking`.
 
-    adcore-dashboard                                  # reads ./mlflow.db
+    adcore-dashboard                                  # $MLFLOW_TRACKING_URI, else ./mlflow.db
     adcore-dashboard --tracking-uri sqlite:////abs/path/mlflow.db --port 8501
 
 All statistics come from `adcore.experiment.summarize` / `table`, applied per group
@@ -19,7 +19,7 @@ import pandas as pd
 
 from adcore.evaluation import METRICS
 from adcore.experiment import _shot_labels, summarize, table
-from adcore.tracking import DEFAULT_TRACKING_URI, list_experiments, load_runs
+from adcore.tracking import default_tracking_uri, list_experiments, load_runs
 
 # Categorical slots in fixed order (light, dark); a group keeps its slot when others
 # are filtered out. Past eight, groups fall back to gray.
@@ -43,7 +43,7 @@ def main() -> None:
     from streamlit.web import cli
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--tracking-uri", default=DEFAULT_TRACKING_URI)
+    parser.add_argument("--tracking-uri", default=default_tracking_uri())
     parser.add_argument("--port", type=int, default=8501)
     args = parser.parse_args()
     sys.argv = [
@@ -63,7 +63,7 @@ def main() -> None:
 
 def _app_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--tracking-uri", default=DEFAULT_TRACKING_URI)
+    parser.add_argument("--tracking-uri", default=default_tracking_uri())
     return parser.parse_known_args()[0]
 
 

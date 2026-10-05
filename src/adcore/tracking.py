@@ -12,12 +12,16 @@ row (``image_auroc``, ...) plus one ``defect/<type>/<metric>`` per defect type, 
 `load_runs` can rebuild the rows of ``results.jsonl``. ``results.jsonl`` stays the source
 of truth for resuming; MLflow is a copy for comparison.
 
+The store is ``$MLFLOW_TRACKING_URI`` when set (e.g. a tracking server), else
+``mlflow.db`` in the working directory.
+
 Needs the ``track`` extra (``mlflow``).
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from collections.abc import Iterable, Sequence
@@ -35,6 +39,12 @@ if TYPE_CHECKING:
     from adcore.experiment import Run
 
 DEFAULT_TRACKING_URI = "sqlite:///mlflow.db"
+
+
+def default_tracking_uri() -> str:
+    """``$MLFLOW_TRACKING_URI`` if set, else `DEFAULT_TRACKING_URI`."""
+    return os.environ.get("MLFLOW_TRACKING_URI") or DEFAULT_TRACKING_URI
+
 
 # Columns that identify a run, and those shared by all of a run's rows.
 _KEY = ("category", "shots", "seed")
@@ -71,7 +81,8 @@ class MLflowTracking:
     Args:
         experiment: MLflow experiment, e.g. one per benchmark (``"mvtec-fewshot"``).
         arch: The label sweeps are compared by in the dashboard.
-        tracking_uri: Defaults to ``mlflow.db`` in the working directory.
+        tracking_uri: Defaults to ``$MLFLOW_TRACKING_URI``, else ``mlflow.db`` in the
+            working directory.
         params: Extra params on every run (backbone, layers, ...).
         tags: Extra tags on every run.
         sweep: Name of the parent run; `FewShotExperiment` defaults it to the name of
@@ -80,7 +91,7 @@ class MLflowTracking:
 
     experiment: str
     arch: str
-    tracking_uri: str = DEFAULT_TRACKING_URI
+    tracking_uri: str = field(default_factory=default_tracking_uri)
     params: dict[str, Any] = field(default_factory=dict)
     tags: dict[str, str] = field(default_factory=dict)
     sweep: str | None = None
@@ -261,14 +272,15 @@ def backfill(
     return len(todo)
 
 
-def list_experiments(tracking_uri: str = DEFAULT_TRACKING_URI) -> list[str]:
+def list_experiments(tracking_uri: str | None = None) -> list[str]:
     from mlflow import MlflowClient
 
-    return sorted(e.name for e in MlflowClient(tracking_uri).search_experiments())
+    client = MlflowClient(tracking_uri or default_tracking_uri())
+    return sorted(e.name for e in client.search_experiments())
 
 
 def load_runs(
-    tracking_uri: str = DEFAULT_TRACKING_URI,
+    tracking_uri: str | None = None,
     experiments: Sequence[str] | None = None,
     sweeps: Sequence[str] | None = None,
 ) -> pd.DataFrame:
@@ -282,7 +294,7 @@ def load_runs(
 
     from adcore.experiment import results_frame
 
-    client = MlflowClient(tracking_uri)
+    client = MlflowClient(tracking_uri or default_tracking_uri())
     found = client.search_experiments()
     names = {e.experiment_id: e.name for e in found if experiments is None or e.name in experiments}
     if not names:

@@ -1,0 +1,19 @@
+# PatchCore on WideResNet-50 layers 2+3, the full memory bank.
+name: patchcore-wrn50  # MLflow `arch`, and the output directory
+# Built once per process and passed by name to every run's module.
+shared:
+  extractor:
+    _target_: adcore.TimmExtractor
+    model_name: wide_resnet50_2
+    out_indices: [2, 3]
+# Built fresh for every run; must be an adcore.AnomalyModule. A `run` parameter in its
+# signature gets the adcore.Run (category, shots, seed).
+module:
+  _target_: adcore.PatchCore
+  sampling_ratio: 1.0
+  num_neighbors: 9
+image_size: [224, 224]  # images, masks and pixel metrics; ignored when transform is set
+transform: null         # torchvision v2 transform over (image, mask); null = resize + normalise
+train_transform: null   # null = transform
+support_aug: null       # e.g. {_target_: adcore.AugmentSpec, n_views: 30}
+trainer: {}             # Trainer kwargs, over the experiment's

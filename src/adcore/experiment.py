@@ -31,7 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -125,6 +125,7 @@ class FewShotExperiment:
         cache_test_set: Decode each category's test split once and reuse it for every run.
         tracking: Also record every run in MLflow (`adcore.tracking.MLflowTracking`); its
             sweep name defaults to the name of ``output_dir``.
+        metadata: Extra entries for ``config.json`` and the sweep's MLflow params.
     """
 
     def __init__(
@@ -147,6 +148,7 @@ class FewShotExperiment:
         spec: DatasetSpec = MVTEC,
         support_aug: AugmentSpec | None = None,
         tracking: MLflowTracking | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         self.root = Path(root)
         self.module_factory = module_factory
@@ -168,6 +170,7 @@ class FewShotExperiment:
         self.cache_test_set = cache_test_set
         self._rows: list[dict[str, Any]] = []
         self.tracking = tracking
+        self.metadata = dict(metadata or {})
         self._sweep_id: str | None = None
         if tracking is not None and tracking.sweep is None and self.output_dir is None:
             raise ValueError("tracking without output_dir needs MLflowTracking(sweep=...)")
@@ -198,6 +201,7 @@ class FewShotExperiment:
             "train_transform": repr(self.train_transform),
             "support_aug": repr(self.support_aug),
             "trainer_kwargs": repr(self.trainer_kwargs),
+            **self.metadata,
         }
 
     def _load_rows(self) -> list[dict[str, Any]]:
@@ -216,7 +220,7 @@ class FewShotExperiment:
             return None
         return self.tracking.sweep or self.output_dir.name
 
-    def _start_sweep(self) -> str:
+    def start_sweep(self) -> str:
         """The MLflow parent run; on first use it also records runs done before tracking."""
         if self._sweep_id is None:
             from adcore.tracking import backfill
@@ -226,6 +230,10 @@ class FewShotExperiment:
                 self.tracking, self._sweep_id, self.sweep, self._load_rows(), self.output_dir
             )
         return self._sweep_id
+
+    def use_sweep(self, sweep_id: str) -> None:
+        """Record runs under an existing parent run, e.g. one started by another process."""
+        self._sweep_id = sweep_id
 
     def trainer(self, run: Run, mlflow_run_id: str | None = None) -> L.Trainer:
         """The run's ``Trainer``; with ``mlflow_run_id`` it also logs to that MLflow run."""
@@ -260,42 +268,55 @@ class FewShotExperiment:
             }
         )
 
-    def run(self, progress: bool = True) -> pd.DataFrame:
-        """Run everything not already in ``output_dir`` and return all results."""
+    def write_config(self) -> None:
         if self.output_dir is not None:
             self.output_dir.mkdir(parents=True, exist_ok=True)
             (self.output_dir / "config.json").write_text(
                 json.dumps(self.config(), indent=2)
             )
+
+    def todo(self) -> list[Run]:
+        """The runs not already in ``output_dir``."""
         done = {
             (row["category"], row["shots"], row["seed"]) for row in self._load_rows()
         }
-        todo = [run for run in self.runs if run.key not in done]
+        return [run for run in self.runs if run.key not in done]
+
+    def run(self, progress: bool = True) -> pd.DataFrame:
+        """Run everything not already in ``output_dir`` and return all results."""
+        self.write_config()
+        todo = self.todo()
         if self.tracking is not None:
-            self._start_sweep()
+            self.start_sweep()
 
         bar = tqdm(total=len(todo), desc="Runs", disable=not progress)
         for category in self.categories:
             category_runs = [run for run in todo if run.category == category]
             if not category_runs:
                 continue
-            test = None
-            if self.cache_test_set:
-                test = CachedDataset(
-                    MVTecDataset(
-                        self.root, category, "test", self.transform, spec=self.spec
-                    ),
-                    num_workers=self.num_workers,
-                    batch_size=self.batch_size,
-                )
-            for run in category_runs:
-                bar.set_postfix_str(run.name)
-                self._record(self.run_one(run, test))
+            bar.set_postfix_str(category)
+            for outcome in self.run_category(category, category_runs):
+                self.record(outcome)
                 bar.update()
         bar.close()
         if self.tracking is not None:
-            self.tracking.end_sweep(self._start_sweep())
+            self.tracking.end_sweep(self.start_sweep())
         return self.results()
+
+    def run_category(self, category: str, runs: Sequence[Run]) -> Iterator[dict[str, Any]]:
+        """Fit and test ``runs``, all of ``category``, yielding each outcome for `record`.
+
+        The category's test split is decoded once for all of them.
+        """
+        test = None
+        if self.cache_test_set:
+            test = CachedDataset(
+                MVTecDataset(self.root, category, "test", self.transform, spec=self.spec),
+                num_workers=self.num_workers,
+                batch_size=self.batch_size,
+            )
+        for run in runs:
+            yield self.run_one(run, test)
 
     def datamodule(self, run: Run, test_dataset=None) -> MVTecDataModule:
         return MVTecDataModule(
@@ -318,7 +339,7 @@ class FewShotExperiment:
         mlflow_run_id = None
         if self.tracking is not None:
             mlflow_run_id = self.tracking.start_run(
-                self._start_sweep(), self.sweep, run, self.output_dir
+                self.start_sweep(), self.sweep, run, self.output_dir
             )
         try:
             outcome = self._fit_and_test(run, test_dataset, mlflow_run_id)
@@ -370,7 +391,15 @@ class FewShotExperiment:
         ]
         return {"run": run, "rows": rows, "scores": result.predictions.scores_frame()}
 
-    def _record(self, outcome: dict[str, Any]) -> None:
+    def track(self, outcome: dict[str, Any]) -> None:
+        """Copy an outcome from a process without tracking into MLflow, final metrics only."""
+        run_id = self.tracking.start_run(
+            self.start_sweep(), self.sweep, outcome["run"], self.output_dir
+        )
+        self.tracking.log_rows(run_id, [_jsonable(r) for r in outcome["rows"]])
+
+    def record(self, outcome: dict[str, Any]) -> None:
+        """Append an outcome of `run_one` to ``results.jsonl`` and ``scores/``."""
         rows = [_jsonable(row) for row in outcome["rows"]]
         if self.output_dir is None:
             self._rows += rows
