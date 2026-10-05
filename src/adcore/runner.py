@@ -37,6 +37,7 @@ from typing import Any
 
 import pandas as pd
 from hydra.utils import get_object, instantiate
+from lightning.pytorch.utilities.seed import isolate_rng
 from omegaconf import DictConfig, OmegaConf
 from tqdm.auto import tqdm
 
@@ -54,10 +55,10 @@ _UNHASHED = ("name", "categories", "shots", "seeds", "batch_size", "num_workers"
 _CONCURRENT_SCHEMES = ("http", "https", "databricks", "postgresql", "mysql", "mssql")
 
 
-def _build(node: Any, **kwargs: Any) -> Any:
+def _build(node: Any) -> Any:
     if node is None:
         return None
-    return instantiate(node, _convert_="all", **kwargs)
+    return instantiate(node, _convert_="all")
 
 
 class ModuleFactory:
@@ -78,11 +79,16 @@ class ModuleFactory:
 
     def __call__(self, run: Run) -> AnomalyModule:
         if self._objects is None:
-            self._objects = {key: _build(node) for key, node in self.shared.items()}
+            # Building draws random numbers (e.g. timm's init before the pretrained weights
+            # load); without isolation the first run of each process would see another RNG
+            # state than the rest, so results would depend on the worker and on resuming.
+            with isolate_rng():
+                self._objects = {key: _build(node) for key, node in self.shared.items()}
         kwargs = dict(self._objects)
         if self.takes_run:
             kwargs["run"] = run
-        module = _build(self.module, **kwargs)
+        # Called rather than passed to `instantiate`, which would turn a `Run` into a config.
+        module = instantiate(self.module, _convert_="all", _partial_=True)(**kwargs)
         if not isinstance(module, AnomalyModule):
             raise TypeError(f"model.module built a {type(module).__name__}, not an AnomalyModule")
         return module
@@ -98,6 +104,10 @@ def config_hash(cfg: DictConfig) -> str:
     }
     text = json.dumps({"model": model, "experiment": experiment}, sort_keys=True)
     return hashlib.sha256(text.encode()).hexdigest()[:12]
+
+
+def _plain(node: DictConfig | None) -> dict[str, Any]:
+    return {} if node is None else OmegaConf.to_container(node, resolve=True)
 
 
 def _flatten(node: Any, prefix: str) -> dict[str, Any]:
@@ -139,8 +149,8 @@ def build_experiment(
     """The `FewShotExperiment` a resolved config describes; nothing is loaded until it runs."""
     model, experiment = cfg.model, cfg.experiment
     trainer = {
-        **OmegaConf.to_container(experiment.get("trainer") or {}),
-        **OmegaConf.to_container(model.get("trainer") or {}),
+        **_plain(experiment.get("trainer")),
+        **_plain(model.get("trainer")),
     }
     if device is not None:
         trainer["devices"] = [device]
@@ -243,6 +253,8 @@ def _run_parallel(
 ) -> pd.DataFrame:
     experiment.write_config()
     todo = experiment.todo()
+    if not todo:
+        return experiment.results()
     units = _units(experiment.categories, todo, len(slots))
     tracking = experiment.tracking
     sweep_id = experiment.start_sweep() if tracking is not None else None
