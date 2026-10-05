@@ -1,5 +1,5 @@
-"""Core anomaly detection on Lightning: PatchCore, MVTec AD / VisA loading, metrics, evaluation
-and few-shot experiments."""
+"""Core anomaly detection on Lightning: PatchCore, MVTec AD / VisA loading, metrics, evaluation,
+few-shot experiments and their tracking in MLflow."""
 
 from adcore.datamodule import (
     AugmentedSupport,
@@ -26,6 +26,7 @@ from adcore.mvtec import (
     split_by_defect_type,
 )
 from adcore.patchcore import PatchcoreModel
+from adcore.tracking import MLflowTracking, load_runs, upload_sweep
 
 __all__ = [
     "ADMetrics",
@@ -37,6 +38,7 @@ __all__ = [
     "DatasetSpec",
     "EvalResult",
     "FewShotExperiment",
+    "MLflowTracking",
     "MVTEC",
     "MVTecDataModule",
     "MVTecDataset",
@@ -53,10 +55,12 @@ __all__ = [
     "evaluate",
     "few_shot_subset",
     "image_aupr",
+    "load_runs",
     "score",
     "split_by_defect_type",
     "region_structure",
     "summarize",
     "table",
+    "upload_sweep",
     "upsample_and_blur",
 ]

@@ -20,6 +20,10 @@ A trainable module works the same way; give the Trainer its epochs with
 With an ``output_dir`` every finished run is appended to ``results.jsonl`` straight away,
 and a rerun skips the runs already there, so an interrupted experiment resumes. Each
 run's Lightning logs (training losses, test metrics) go to ``logs/<run>/``.
+
+With ``tracking=MLflowTracking(experiment="mvtec-fewshot", arch="patchcore-wrn50")``
+every run is also recorded in MLflow, to compare sweeps in ``adcore-dashboard``; see
+`adcore.tracking`.
 """
 
 from __future__ import annotations
@@ -32,7 +36,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import perf_counter
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import lightning as L
 import numpy as np
@@ -46,6 +50,9 @@ from adcore.datamodule import AugmentSpec, CachedDataset, MVTecDataModule
 from adcore.evaluation import METRICS
 from adcore.module import AnomalyModule
 from adcore.mvtec import MVTEC, DatasetSpec, MVTecDataset, default_transform
+
+if TYPE_CHECKING:
+    from adcore.tracking import MLflowTracking
 
 
 @dataclass(frozen=True)
@@ -116,6 +123,8 @@ class FewShotExperiment:
         support_aug: Augmented views of each few-shot frame; see
             `adcore.datamodule.AugmentedSupport`. Full-shot runs ignore it.
         cache_test_set: Decode each category's test split once and reuse it for every run.
+        tracking: Also record every run in MLflow (`adcore.tracking.MLflowTracking`); its
+            sweep name defaults to the name of ``output_dir``.
     """
 
     def __init__(
@@ -137,6 +146,7 @@ class FewShotExperiment:
         train_transform=None,
         spec: DatasetSpec = MVTEC,
         support_aug: AugmentSpec | None = None,
+        tracking: MLflowTracking | None = None,
     ) -> None:
         self.root = Path(root)
         self.module_factory = module_factory
@@ -157,6 +167,10 @@ class FewShotExperiment:
         self.num_workers = num_workers
         self.cache_test_set = cache_test_set
         self._rows: list[dict[str, Any]] = []
+        self.tracking = tracking
+        self._sweep_id: str | None = None
+        if tracking is not None and tracking.sweep is None and self.output_dir is None:
+            raise ValueError("tracking without output_dir needs MLflowTracking(sweep=...)")
 
     @property
     def runs(self) -> list[Run]:
@@ -196,15 +210,42 @@ class FewShotExperiment:
         """Every recorded row, including those from earlier sessions in ``output_dir``."""
         return results_frame(self._load_rows())
 
-    def trainer(self, run: Run) -> L.Trainer:
+    @property
+    def sweep(self) -> str | None:
+        if self.tracking is None:
+            return None
+        return self.tracking.sweep or self.output_dir.name
+
+    def _start_sweep(self) -> str:
+        """The MLflow parent run; on first use it also records runs done before tracking."""
+        if self._sweep_id is None:
+            from adcore.tracking import backfill
+
+            self._sweep_id = self.tracking.start_sweep(self.sweep, self.config())
+            backfill(
+                self.tracking, self._sweep_id, self.sweep, self._load_rows(), self.output_dir
+            )
+        return self._sweep_id
+
+    def trainer(self, run: Run, mlflow_run_id: str | None = None) -> L.Trainer:
+        """The run's ``Trainer``; with ``mlflow_run_id`` it also logs to that MLflow run."""
         overrides = (
             self.trainer_kwargs(run) if callable(self.trainer_kwargs) else self.trainer_kwargs
         )
-        logger = (
-            CSVLogger(self.output_dir / "logs", name=run.name)
-            if self.output_dir is not None
-            else False
-        )
+        loggers = []
+        if self.output_dir is not None:
+            loggers.append(CSVLogger(self.output_dir / "logs", name=run.name))
+        if mlflow_run_id is not None:
+            from lightning.pytorch.loggers import MLFlowLogger
+
+            loggers.append(
+                MLFlowLogger(
+                    experiment_name=self.tracking.experiment,
+                    tracking_uri=self.tracking.tracking_uri,
+                    run_id=mlflow_run_id,
+                )
+            )
+        logger = loggers or False
         return L.Trainer(
             **{
                 "accelerator": "auto",
@@ -230,6 +271,8 @@ class FewShotExperiment:
             (row["category"], row["shots"], row["seed"]) for row in self._load_rows()
         }
         todo = [run for run in self.runs if run.key not in done]
+        if self.tracking is not None:
+            self._start_sweep()
 
         bar = tqdm(total=len(todo), desc="Runs", disable=not progress)
         for category in self.categories:
@@ -250,6 +293,8 @@ class FewShotExperiment:
                 self._record(self.run_one(run, test))
                 bar.update()
         bar.close()
+        if self.tracking is not None:
+            self.tracking.end_sweep(self._start_sweep())
         return self.results()
 
     def datamodule(self, run: Run, test_dataset=None) -> MVTecDataModule:
@@ -270,11 +315,29 @@ class FewShotExperiment:
 
     def run_one(self, run: Run, test_dataset=None) -> dict[str, Any]:
         """Fit and test one run; returns its metric rows and per-image scores."""
+        mlflow_run_id = None
+        if self.tracking is not None:
+            mlflow_run_id = self.tracking.start_run(
+                self._start_sweep(), self.sweep, run, self.output_dir
+            )
+        try:
+            outcome = self._fit_and_test(run, test_dataset, mlflow_run_id)
+        except BaseException:
+            if mlflow_run_id is not None:
+                self.tracking.fail_run(mlflow_run_id)
+            raise
+        if mlflow_run_id is not None:
+            self.tracking.log_rows(mlflow_run_id, [_jsonable(r) for r in outcome["rows"]])
+        return outcome
+
+    def _fit_and_test(
+        self, run: Run, test_dataset, mlflow_run_id: str | None
+    ) -> dict[str, Any]:
         with _quiet_lightning():
             L.seed_everything(run.seed, verbose=False)
             datamodule = self.datamodule(run, test_dataset)
             module = self.module_factory(run)
-            trainer = self.trainer(run)
+            trainer = self.trainer(run, mlflow_run_id)
 
             start = perf_counter()
             # Zero-shot modules have nothing to fit.

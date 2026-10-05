@@ -19,8 +19,16 @@ dependencies = [
     "tqdm>=4.70.1",
 ]
 
+[project.optional-dependencies]
+track = [
+    "mlflow>=3",
+    "plotly>=6",
+    "streamlit>=1.50",
+]
+
 [project.scripts]
 adcore-convert-visa = "adcore.convert_visa:main"
+adcore-dashboard = "adcore.dashboard:main"
 
 [build-system]
 requires = ["hatchling"]

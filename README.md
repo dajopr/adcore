@@ -17,6 +17,8 @@ few-shot experiments.
 | `adcore.metrics` | image AUROC, pixel AUROC / AUPR / AUPRO from per-image histograms |
 | `adcore.evaluation` | `Predictions`, `score`, and `evaluate(module, loader)` for a one-call `Trainer.test` |
 | `adcore.experiment` | `FewShotExperiment`: categories × shots × seeds, resumable, plus `summarize` / `table` |
+| `adcore.tracking` | `MLflowTracking`: record sweeps in a local MLflow store; `upload_sweep`, `load_runs` |
+| `adcore.dashboard` | `adcore-dashboard`: Streamlit app comparing sweeps by architecture |
 
 ## Writing a module
 
@@ -123,6 +125,47 @@ summarize(results)               # mean/std per metric, plus the category mean
 - Each category's test split is decoded once and held in memory for all its runs.
 - Metrics are computed at `image_size` resolution (default 224×224).
 - In `summarize`, the `"mean"` category averages categories within each seed first, so its std is the seed variance of the benchmark mean.
+
+## Tracking and comparing sweeps
+
+Install the extra with `uv sync --extra track` (or `pip install adcore[track]`). It adds
+MLflow, Streamlit and Plotly. Everything stays local in a SQLite file, so no server or
+licence is needed.
+
+```python
+from adcore import FewShotExperiment, MLflowTracking
+
+experiment = FewShotExperiment(
+    root,
+    module_factory=...,
+    output_dir="runs/patchcore-wrn50",
+    tracking=MLflowTracking(
+        experiment="mvtec-fewshot",     # one per benchmark
+        arch="patchcore-wrn50",         # what the dashboard compares by
+        params={"backbone": "wide_resnet50_2", "layers": "2,3"},
+    ),
+)
+experiment.run()
+```
+
+- Each sweep is a parent run named after `output_dir`, unless you pass `sweep=`.
+- Each (category, shots, seed) is a nested child run. Its params are `category`, `shots` (`"full"` for all frames), `seed` and `arch`. Its metrics are the whole-test-set row (`image_auroc`, …) plus `defect/<type>/<metric>` for each defect type.
+- Trainable modules also log their training losses to the child run, through Lightning's `MLFlowLogger`.
+- The store is `mlflow.db` in the working directory. Pass `tracking_uri="sqlite:////abs/path/mlflow.db"` to share one store between projects.
+- `results.jsonl` stays the source of truth for resuming. When a sweep starts tracking, its runs already in `results.jsonl` are copied into MLflow first.
+- To add a sweep that ran before tracking existed, call `upload_sweep("runs/old-sweep", MLflowTracking(experiment="mvtec-fewshot", arch="..."))`. Calling it again adds nothing.
+- `load_runs(uri, experiments=[...])` returns the rows of `results.jsonl` with `arch`, `sweep` and `experiment` columns added. `summarize` and `table` work on any subset of them.
+
+Start the dashboard with `adcore-dashboard [--tracking-uri sqlite:///mlflow.db] [--port 8501]`. It compares by `arch` or by sweep, and has these tabs:
+
+- **Overview**: the metric against shots, with the std over seeds as a band.
+- **Per category**: one small plot per category.
+- **Heatmap**: category × architecture at a chosen number of shots.
+- **Tables**: the `table` view for each group.
+- **Defect types**: the metric for each defect type in one category.
+- **Cost**: fit and test time per run.
+
+To browse the raw runs, use `mlflow ui --backend-store-uri sqlite:///mlflow.db`.
 
 ## Acknowledgements
 
