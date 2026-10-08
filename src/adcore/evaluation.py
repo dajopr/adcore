@@ -36,6 +36,8 @@ if TYPE_CHECKING:
     from adcore.module import AnomalyModule
 
 METRICS = ("image_auroc", "image_aupr", "pixel_auroc", "pixel_aupr", "aupro")
+# Prefix of a module's own statistics among result columns and MLflow metrics.
+STAT = "stat/"
 
 
 @dataclass
@@ -70,6 +72,8 @@ class Predictions:
 class EvalResult:
     metrics: pd.DataFrame
     predictions: Predictions
+    # The module's own statistics over the whole eval set; see `AnomalyModule` ``stats``.
+    stats: dict[str, float] = field(default_factory=dict)
 
     @property
     def overall(self) -> pd.DataFrame:

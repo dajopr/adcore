@@ -47,7 +47,7 @@ from lightning.pytorch.utilities.model_helpers import is_overridden
 from tqdm.auto import tqdm
 
 from adcore.datamodule import AugmentSpec, CachedDataset, MVTecDataModule
-from adcore.evaluation import METRICS
+from adcore.evaluation import METRICS, STAT
 from adcore.module import AnomalyModule
 from adcore.mvtec import MVTEC, DatasetSpec, MVTecDataset, default_transform
 
@@ -371,6 +371,7 @@ class FewShotExperiment:
             test_seconds = perf_counter() - start
 
         result = module.test_result
+        stats = {f"{STAT}{name}": value for name, value in result.stats.items()}
         pro_connectivity = module.pro_connectivity
         del module, trainer
         if torch.cuda.is_available():
@@ -386,6 +387,8 @@ class FewShotExperiment:
                 "pro_connectivity": pro_connectivity,
                 "fit_seconds": fit_seconds,
                 "test_seconds": test_seconds,
+                # The module's stats cover the whole test split, so only its "all" row.
+                **(stats if row["defect_type"] == "all" else {}),
             }
             for row in result.metrics.to_dict("records")
         ]
@@ -432,6 +435,9 @@ def results_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
     for metric in METRICS:
         # Rows from before a metric existed lack it.
         frame[metric] = frame[metric].astype(float) if metric in frame else np.nan
+    for column in frame.columns:
+        if column.startswith(STAT):
+            frame[column] = frame[column].astype(float)
     if "pro_connectivity" in frame:
         # Rows from before the option existed were 4-connected.
         frame["pro_connectivity"] = frame["pro_connectivity"].fillna(4).astype(int)
@@ -478,13 +484,25 @@ def summarize(
 
 
 def table(
-    results: pd.DataFrame, metric: str = "image_auroc", decimals: int = 1
+    results: pd.DataFrame,
+    metric: str = "image_auroc",
+    decimals: int = 1,
+    percent: bool | None = None,
 ) -> pd.DataFrame:
-    """Categories x shots of ``"mean ± std"`` in percent for one metric."""
+    """Categories x shots of ``"mean ± std"`` for one metric.
+
+    ``percent`` defaults to True for the detection metrics, with ``decimals`` after the
+    point; otherwise values are shown as they are, with 3 significant digits.
+    """
+    if percent is None:
+        percent = metric in METRICS
     stats = summarize(results, [metric])[metric]
-    text = (stats["mean"] * 100).round(decimals).map(
-        lambda m: f"{m:.{decimals}f}"
-    ) + (stats["std"] * 100).map(
-        lambda s: "" if pd.isna(s) else f" ± {s:.{decimals}f}"
+    if percent:
+        stats = stats * 100
+        fmt = f".{decimals}f"
+    else:
+        fmt = ".3g"
+    text = stats["mean"].map(lambda m: f"{m:{fmt}}") + stats["std"].map(
+        lambda s: "" if pd.isna(s) else f" ± {s:{fmt}}"
     )
     return text.unstack("shots")

@@ -10,6 +10,12 @@ end the predictions are scored per category and defect type, logged, and kept as
 Logged metrics are ``{stage}/{metric}`` averaged over categories, and
 ``{stage}/{category}/{metric}`` for each category — so a checkpoint callback can monitor
 ``val/image_auroc``.
+
+A module can also track its own statistics with ``stats``: a torchmetrics
+``MetricCollection`` whose metrics take ``update(batch, output)`` — the batch dict and the
+full ``forward`` output — and return one scalar from ``compute()``. They are updated every
+val / test batch, computed over the whole eval set, logged as ``{stage}/stat/{name}`` and
+kept on ``val_result.stats`` / ``test_result.stats``.
 """
 
 from __future__ import annotations
@@ -18,9 +24,11 @@ from typing import Any
 
 import lightning as L
 import torch
+from torchmetrics import Metric, MetricCollection
 
 from adcore.evaluation import (
     METRICS,
+    STAT,
     EvalResult,
     PredictionCollector,
     score,
@@ -42,6 +50,12 @@ class AnomalyModule(L.LightningModule):
         fpr_limit: FPR limit for AUPRO.
         pro_connectivity: 4 (MVTec's official convention) or 8 (SubspaceAD, anomalib)
             connected defect regions for AUPRO.
+        stats: Statistics of the module's own, for both val and test: a
+            ``MetricCollection`` (or a dict of ``Metric``) whose metrics take
+            ``update(batch, output)`` and return one scalar from ``compute()``. Each stage
+            gets its own copy.
+        val_stats: Replaces ``stats`` for validation.
+        test_stats: Replaces ``stats`` for testing.
     """
 
     def __init__(
@@ -50,6 +64,9 @@ class AnomalyModule(L.LightningModule):
         n_bins: int = DEFAULT_N_BINS,
         fpr_limit: float = DEFAULT_FPR_LIMIT,
         pro_connectivity: int = DEFAULT_PRO_CONNECTIVITY,
+        stats: MetricCollection | dict[str, Metric] | None = None,
+        val_stats: MetricCollection | dict[str, Metric] | None = None,
+        test_stats: MetricCollection | dict[str, Metric] | None = None,
     ) -> None:
         super().__init__()
         region_structure(pro_connectivity)  # fail at construction, not after testing
@@ -60,6 +77,9 @@ class AnomalyModule(L.LightningModule):
         self.val_result: EvalResult | None = None
         self.test_result: EvalResult | None = None
         self._collectors: dict[str, PredictionCollector] = {}
+        # Registered submodules, so their states follow the module's device.
+        self.val_stats = _collection(val_stats if val_stats is not None else stats)
+        self.test_stats = _collection(test_stats if test_stats is not None else stats)
 
     def forward(self, images: torch.Tensor) -> dict[str, torch.Tensor]:
         """Score ``(B, 3, H, W)`` images.
@@ -74,7 +94,29 @@ class AnomalyModule(L.LightningModule):
     def _collect(self, stage: str, batch: dict[str, Any]) -> dict[str, torch.Tensor]:
         output = self(batch["image"])
         self._collectors.setdefault(stage, PredictionCollector()).add(batch, output)
+        stats = self._stats(stage)
+        if stats is not None:
+            stats.update(batch, output)
         return output
+
+    def _stats(self, stage: str) -> MetricCollection | None:
+        return getattr(self, f"{stage}_stats", None)
+
+    def _compute_stats(self, stage: str) -> dict[str, float]:
+        stats = self._stats(stage)
+        if stats is None:
+            return {}
+        values = {}
+        for name, value in stats.compute().items():
+            value = torch.as_tensor(value)
+            if value.numel() != 1:
+                raise ValueError(
+                    f"stat {name!r} computed a {tuple(value.shape)} tensor; return one "
+                    "scalar per metric (split a vector into one metric per reduction)"
+                )
+            values[name] = float(value)
+        stats.reset()
+        return values
 
     def _finish(self, stage: str) -> EvalResult | None:
         collector = self._collectors.pop(stage, None)
@@ -92,7 +134,9 @@ class AnomalyModule(L.LightningModule):
             fpr_limit=self.fpr_limit,
             pro_connectivity=self.pro_connectivity,
         )
-        result = EvalResult(metrics=metrics, predictions=predictions)
+        result = EvalResult(
+            metrics=metrics, predictions=predictions, stats=self._compute_stats(stage)
+        )
 
         overall = result.overall
         logged = {f"{stage}/{m}": float(overall[m].mean()) for m in METRICS}
@@ -101,6 +145,7 @@ class AnomalyModule(L.LightningModule):
                 logged.update(
                     {f"{stage}/{row['category']}/{m}": float(row[m]) for m in METRICS}
                 )
+        logged.update({f"{stage}/{STAT}{name}": value for name, value in result.stats.items()})
         self.log_dict(logged, batch_size=len(predictions))
         return result
 
@@ -110,6 +155,8 @@ class AnomalyModule(L.LightningModule):
     def on_validation_epoch_end(self) -> None:
         if self.trainer.sanity_checking:
             self._collectors.pop("val", None)
+            if self.val_stats is not None:
+                self.val_stats.reset()
             return
         self.val_result = self._finish("val")
 
@@ -121,3 +168,14 @@ class AnomalyModule(L.LightningModule):
 
     def predict_step(self, batch: dict[str, Any], batch_idx: int) -> dict[str, torch.Tensor]:
         return self(batch["image"])
+
+
+def _collection(
+    stats: MetricCollection | dict[str, Metric] | None,
+) -> MetricCollection | None:
+    """A fresh copy, so stages (and modules sharing a config) never share state."""
+    if stats is None:
+        return None
+    if not isinstance(stats, MetricCollection):
+        stats = MetricCollection(dict(stats))
+    return stats.clone()

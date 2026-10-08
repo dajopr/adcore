@@ -26,6 +26,7 @@ from adcore.mvtec import (
     split_by_defect_type,
 )
 from adcore.patchcore import PatchcoreModel
+from adcore.stats import OutputMean
 from adcore.tracking import MLflowTracking, load_runs, upload_sweep
 
 __all__ = [
@@ -42,6 +43,7 @@ __all__ = [
     "MVTEC",
     "MVTecDataModule",
     "MVTecDataset",
+    "OutputMean",
     "PatchCore",
     "PatchcoreModel",
     "Predictions",

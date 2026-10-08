@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
-from adcore.evaluation import METRICS
+from adcore.evaluation import METRICS, STAT
 
 if TYPE_CHECKING:
     from mlflow import MlflowClient
@@ -49,8 +49,9 @@ def default_tracking_uri() -> str:
 # Columns that identify a run, and those shared by all of a run's rows.
 _KEY = ("category", "shots", "seed")
 _RUN_FIELDS = ("n_train", "n_anomalous_train", "pro_connectivity", "fit_seconds", "test_seconds")
-# Per (category, defect_type) columns of `adcore.evaluation.score`; anything else on a
-# run (e.g. a module's training losses via Lightning) is not part of its results rows.
+# Per (category, defect_type) columns of `adcore.evaluation.score`, plus a module's
+# ``stat/...`` columns; anything else on a run (e.g. a module's training losses via
+# Lightning, or its ``test/stat/...`` curve) is not part of its results rows.
 _ROW_FIELDS = (*METRICS, "n_images", "n_anomalous")
 # The sweep grid grows between sessions; children carry it, the parent does not.
 _GRID = ("categories", "shots", "seeds")
@@ -328,7 +329,7 @@ def load_runs(
                 _, defect_type, column = name.split("/", 2)
             else:
                 defect_type, column = "all", name
-            if column not in _ROW_FIELDS:
+            if column not in _ROW_FIELDS and not column.startswith(STAT):
                 continue
             by_defect.setdefault(defect_type, {})[column] = value
         for defect_type in sorted(by_defect, key=lambda d: (d != "all", d)):

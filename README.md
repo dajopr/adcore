@@ -11,6 +11,7 @@ few-shot experiments.
 | `adcore.detectors` | `PatchCore`: extractor + memory bank, fitted in one optimizer-free epoch |
 | `adcore.patchcore` | `PatchcoreModel`: memory bank + nearest-neighbour scoring on an already extracted `(B, C, H, W)` embedding (adapted from [anomalib](https://github.com/open-edge-platform/anomalib)) |
 | `adcore.coreset` | k-center greedy coreset subsampling (adapted from [anomalib](https://github.com/open-edge-platform/anomalib)) |
+| `adcore.stats` | `OutputMean` and the `Metric` convention for a module's own val/test statistics |
 | `adcore.extractors` | `TimmExtractor`: frozen timm backbone → patch embedding |
 | `adcore.datamodule` | `MVTecDataModule` (few-shot, optional anomalous training frames), `CachedDataset` |
 | `adcore.mvtec` | `MVTecDataset`, `few_shot_subset`, `split_by_defect_type` |
@@ -92,6 +93,87 @@ class ProjectedPatchCore(AnomalyModule):
 `PatchCore` itself skips anomalous frames in its training batches, so it can be fitted
 on the same datamodule.
 
+### Tracking model statistics
+
+A module can record its own quantities over the val / test set, such as the terms of an
+NLL or how much a subspace over-fits, next to the detection metrics. Pass a torchmetrics
+`MetricCollection` (or a dict of metrics) as `stats`. Each metric:
+
+- keeps its state with `add_state(..., dist_reduce_fx=...)`;
+- takes `update(batch, output)`, where `output` is everything `forward` returned, so return
+  the tensors your metrics need next to `anomaly_map` and `pred_score`;
+- returns one scalar from `compute()`. To get several values from one state, write one
+  metric per value and let `compute_groups` share the state.
+
+```python
+from torchmetrics import Metric, MetricCollection, PearsonCorrCoef
+from adcore import AnomalyModule, OutputMean
+
+class EnergyFraction(Metric):
+    """In-subspace energy fraction on normal vs anomalous patches, per component."""
+    full_state_update = False
+
+    def __init__(self, n_components):
+        super().__init__()
+        self.add_state("sums", torch.zeros(2, n_components, dtype=torch.float64), dist_reduce_fx="sum")
+        self.add_state("counts", torch.zeros(2, dtype=torch.float64), dist_reduce_fx="sum")
+
+    def update(self, batch, output):
+        ef = output["energy_fraction"]                                   # (B, C, h, w)
+        anomalous = F.adaptive_max_pool2d(batch["mask"].float(), ef.shape[-2:]).flatten() > 0
+        ef = ef.permute(0, 2, 3, 1).flatten(0, 2).double()               # (B*h*w, C)
+        self.sums += torch.stack([ef[~anomalous].sum(0), ef[anomalous].sum(0)])
+        self.counts += torch.stack([(~anomalous).sum(), anomalous.sum()])
+
+    def ratio(self):                                                     # (C,) normal / anomalous
+        return (self.sums[0] / self.counts[0]) / (self.sums[1] / self.counts[1])
+
+class EnergyFractionRatioMean(EnergyFraction):
+    def compute(self): return self.ratio().mean()
+
+class EnergyFractionRatioMax(EnergyFraction):
+    def compute(self): return self.ratio().max()
+
+class ScoreEnergyCorrelation(PearsonCorrCoef):
+    def update(self, batch, output):
+        super().update(output["patch_score"].flatten(), output["energy_fraction"].mean(1).flatten())
+
+class MyFlow(AnomalyModule):
+    def __init__(self, n_components=768):
+        super().__init__(stats=MetricCollection(
+            {"ef_ratio_mean": EnergyFractionRatioMean(n_components),
+             "ef_ratio_max": EnergyFractionRatioMax(n_components),
+             "score_ef_pearson": ScoreEnergyCorrelation(),
+             "nll_logdet": OutputMean("nll_logdet")},       # mean of a (B,) or (B, ...) output
+            compute_groups=[["ef_ratio_mean", "ef_ratio_max"], ["score_ef_pearson"], ["nll_logdet"]],
+        ))
+```
+
+- The collection is updated on every val and test batch, then computed over the whole set
+  and reset at epoch end. Validation and testing each get their own copy. Use `val_stats=`
+  or `test_stats=` to give one stage different metrics, e.g. expensive ones only at test.
+- The values appear in four places:
+  - logged as `val/stat/<name>` / `test/stat/<name>`, so a checkpoint callback can monitor them;
+  - kept on `module.val_result.stats` / `module.test_result.stats`, and returned by `evaluate`;
+  - in a few-shot experiment, as `stat/<name>` columns on each run's `defect_type == "all"`
+    row of `results.jsonl`. The stats cover the whole test split, not each defect type;
+  - with tracking, as final metrics of the MLflow child run and in the dashboard's metric
+    picker. `table(results, "stat/<name>")` prints them as they are, not in %.
+- Keep the state small, e.g. running sums. A metric that stores every value, like
+  `SpearmanCorrCoef`, holds the whole test set in memory.
+- A metric's state is not saved in checkpoints.
+
+In a model config, pass the collection through to `AnomalyModule` (`PatchCore` takes it as is):
+
+```yaml
+module:
+  _target_: adcore.PatchCore
+  stats:
+    _target_: torchmetrics.MetricCollection
+    metrics:
+      pred_score_mean: {_target_: adcore.OutputMean, key: pred_score}
+```
+
 ## Few-shot experiments
 
 ```python
@@ -150,7 +232,7 @@ experiment.run()
 ```
 
 - Each sweep is a parent run named after `output_dir`, unless you pass `sweep=`.
-- Each (category, shots, seed) is a nested child run. Its params are `category`, `shots` (`"full"` for all frames), `seed` and `arch`. Its metrics are the whole-test-set row (`image_auroc`, …) plus `defect/<type>/<metric>` for each defect type.
+- Each (category, shots, seed) is a nested child run. Its params are `category`, `shots` (`"full"` for all frames), `seed` and `arch`. Its metrics are the whole-test-set row (`image_auroc`, …) plus `defect/<type>/<metric>` for each defect type, and the module's `stat/<name>` values (see [Tracking model statistics](#tracking-model-statistics)).
 - Trainable modules also log their training losses to the child run, through Lightning's `MLFlowLogger`.
 - The store is `$MLFLOW_TRACKING_URI` when it is set, e.g. `http://mlflow-host:5000`; otherwise it is `mlflow.db` in the working directory. Pass `tracking_uri=...` to override either. MLflow reads its credentials (`MLFLOW_TRACKING_USERNAME`, `MLFLOW_TRACKING_PASSWORD`, `MLFLOW_TRACKING_TOKEN`) from the environment itself.
 - `results.jsonl` stays the source of truth for resuming. When a sweep starts tracking, its runs already in `results.jsonl` are copied into MLflow first.

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from adcore.evaluation import METRICS
+from adcore.evaluation import METRICS, STAT
 from adcore.experiment import _shot_labels, summarize, table
 from adcore.tracking import default_tracking_uri, list_experiments, load_runs
 
@@ -76,10 +76,24 @@ def _shot_order(results: pd.DataFrame) -> list[str]:
     return list(_shot_labels(results["shots"]).categories)
 
 
+def _metric_options(results: pd.DataFrame) -> list[str]:
+    """The detection metrics, then every module stat some run recorded."""
+    stats = sorted(
+        c for c in results.columns if c.startswith(STAT) and results[c].notna().any()
+    )
+    return [*METRICS, *stats]
+
+
+def _scale(metric: str) -> float:
+    """Detection metrics are shown in %, module stats as they are."""
+    return 100.0 if metric in METRICS else 1.0
+
+
 def _per_group_summary(
     results: pd.DataFrame, group_by: str, metric: str
 ) -> pd.DataFrame:
-    """Long frame: group, shots (label), category (incl. "mean"), mean, std — in %."""
+    """Long frame: group, shots (label), category (incl. "mean"), mean, std — detection
+    metrics in %."""
     parts = []
     for group, frame in results.groupby(group_by, sort=False):
         stats = summarize(frame, [metric])[metric].reset_index()
@@ -89,11 +103,13 @@ def _per_group_summary(
     if not parts:
         return pd.DataFrame(columns=["group", "shots", "category", "mean", "std"])
     out = pd.concat(parts, ignore_index=True)
-    out[["mean", "std"]] *= 100
+    out[["mean", "std"]] *= _scale(metric)
     return out
 
 
-def _add_line(fig, stats, group, color, order, *, row=None, col=None, legend=True):
+def _add_line(
+    fig, stats, group, color, order, *, row=None, col=None, legend=True, fmt=".1f"
+):
     import plotly.graph_objects as go
 
     stats = stats.set_index("shots").reindex(order).dropna(subset=["mean"])
@@ -124,7 +140,9 @@ def _add_line(fig, stats, group, color, order, *, row=None, col=None, legend=Tru
             mode="lines+markers",
             line={"color": color, "width": 2},
             marker={"size": 8, "color": color},
-            hovertemplate=f"<b>{group}</b><br>%{{x}} shot: %{{y:.1f}} ± %{{customdata:.1f}}<extra></extra>",
+            hovertemplate=(
+                f"<b>{group}</b><br>%{{x}} shot: %{{y:{fmt}}} ± %{{customdata:{fmt}}}<extra></extra>"
+            ),
         ),
         **where,
     )
@@ -175,7 +193,7 @@ def app() -> None:
         sweeps = st.multiselect(
             "Sweeps", sorted(results["sweep"].unique()), default=sorted(results["sweep"].unique())
         )
-        metric = st.selectbox("Metric", METRICS)
+        metric = st.selectbox("Metric", _metric_options(results))
         all_categories = list(dict.fromkeys(results["category"]))
         categories = st.multiselect("Categories", all_categories, default=all_categories)
 
@@ -197,7 +215,9 @@ def app() -> None:
     groups = [g for g in all_groups if g in set(results[group_by])]
     order = _shot_order(results)
     stats = _per_group_summary(results, group_by, metric)
-    label = f"{metric} (%)"
+    percent = metric in METRICS
+    label = f"{metric} (%)" if percent else metric
+    fmt = ".1f" if percent else ".3g"
 
     st.title(experiment)
     overall = results[results["defect_type"] == "all"]
@@ -219,14 +239,15 @@ def app() -> None:
         fig = go.Figure()
         for group in groups:
             mine = stats[(stats["group"] == group) & (stats["category"] == "mean")]
-            _add_line(fig, mine, group, colors[group], order)
+            _add_line(fig, mine, group, colors[group], order, fmt=fmt)
         st.plotly_chart(_style(fig, label), width="stretch")
         best = (
             stats[stats["category"] == "mean"]
             .pivot(index="group", columns="shots", values="mean")
             .reindex(columns=[s for s in order if s in set(stats["shots"])])
-            .round(1)
         )
+        if percent:
+            best = best.round(1)
         st.dataframe(best, width="stretch")
 
     with per_category:
@@ -252,6 +273,7 @@ def app() -> None:
                     row=i // _FACET_COLUMNS + 1,
                     col=i % _FACET_COLUMNS + 1,
                     legend=i == 0,
+                    fmt=fmt,
                 )
         _style(fig, "", height=240 * n_rows + 60)
         fig.update_xaxes(title_text="")
@@ -273,12 +295,12 @@ def app() -> None:
                 x=list(grid.columns),
                 y=list(grid.index),
                 colorscale=[[i / (len(_SEQUENTIAL) - 1), c] for i, c in enumerate(_SEQUENTIAL)],
-                text=grid.round(1).values,
+                text=grid.apply(lambda c: c.map(lambda v: "" if pd.isna(v) else f"{v:{fmt}}")).values,
                 texttemplate="%{text}",
                 xgap=2,
                 ygap=2,
                 colorbar={"title": label},
-                hovertemplate="%{y} · %{x}: %{z:.1f}<extra></extra>",
+                hovertemplate=f"%{{y}} · %{{x}}: %{{z:{fmt}}}<extra></extra>",
             )
         )
         fig.update_layout(
@@ -289,7 +311,8 @@ def app() -> None:
         st.plotly_chart(fig, width="stretch")
 
     with tables:
-        st.caption(f"`table(results, {metric!r})` per {group_by}: mean ± std over seeds, in %.")
+        unit = ", in %" if percent else ""
+        st.caption(f"`table(results, {metric!r})` per {group_by}: mean ± std over seeds{unit}.")
         for group in groups:
             st.subheader(group)
             st.dataframe(
@@ -305,7 +328,9 @@ def app() -> None:
             & (results["defect_type"] != "all")
             & (_shot_labels(results["shots"]).astype(str) == shots)
         ]
-        if per_defect.empty:
+        if not percent:
+            st.info("Module stats are recorded per run, not per defect type.")
+        elif per_defect.empty:
             st.info("No per-defect rows for this selection.")
         else:
             agg = (

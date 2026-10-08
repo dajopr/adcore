@@ -33,6 +33,7 @@ dependencies = [
     { name = "scipy", version = "1.18.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "timm" },
     { name = "torch" },
+    { name = "torchmetrics" },
     { name = "torchvision" },
     { name = "tqdm" },
 ]
@@ -70,6 +71,7 @@ requires-dist = [
     { name = "streamlit", marker = "extra == 'track'", specifier = ">=1.50" },
     { name = "timm", specifier = ">=1.0.29" },
     { name = "torch", specifier = ">=2.14.0" },
+    { name = "torchmetrics", specifier = ">=1.0" },
     { name = "torchvision", specifier = ">=0.29.0" },
     { name = "tqdm", specifier = ">=4.70.1" },
 ]
