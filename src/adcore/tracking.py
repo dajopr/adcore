@@ -10,7 +10,9 @@ Layout: one MLflow experiment per benchmark, one parent run per sweep (tag ``swe
 a nested child run per (category, shots, seed). A child's metrics are its whole-test-set
 row (``image_auroc``, ...) plus one ``defect/<type>/<metric>`` per defect type, so
 `load_runs` can rebuild the rows of ``results.jsonl``. ``results.jsonl`` stays the source
-of truth for resuming; MLflow is a copy for comparison.
+of truth for resuming; MLflow is a copy for comparison. A module's per-run files
+(`adcore.AnomalyModule.artifacts`) are the child's artifacts; `load_artifacts` reads one of
+them back for every run.
 
 The store is ``$MLFLOW_TRACKING_URI`` when set (e.g. a tracking server), else
 ``mlflow.db`` in the working directory.
@@ -23,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
@@ -31,7 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
-from adcore.evaluation import METRICS, STAT
+from adcore.evaluation import METRICS, STAT, check_artifact_name, decode_artifact
 
 if TYPE_CHECKING:
     from mlflow import MlflowClient
@@ -183,6 +186,17 @@ class MLflowTracking:
         self._log(run_id, metrics=metrics)
         self.client.set_terminated(run_id)
 
+    def log_artifacts(self, run_id: str, artifacts: dict[str, bytes]) -> None:
+        """A run's encoded files (`adcore.evaluation.EvalResult.artifacts`) as artifacts."""
+        if not artifacts:
+            return
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, data in artifacts.items():
+                path = Path(tmp) / check_artifact_name(name)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+            self.client.log_artifacts(run_id, tmp)
+
     def fail_run(self, run_id: str) -> None:
         self.client.set_terminated(run_id, status="FAILED")
 
@@ -259,8 +273,9 @@ def backfill(
     rows: Sequence[dict[str, Any]],
     output_dir: Path | None = None,
 ) -> int:
-    """Record the runs in ``rows`` (``results.jsonl`` rows) that the sweep lacks."""
-    from adcore.experiment import Run
+    """Record the runs in ``rows`` (``results.jsonl`` rows) that the sweep lacks, with
+    their files from ``output_dir/artifacts/<run>/``."""
+    from adcore.experiment import Run, run_artifacts
 
     by_run: dict[tuple, list[dict[str, Any]]] = {}
     for row in rows:
@@ -268,7 +283,10 @@ def backfill(
     done = tracking.logged_keys(parent_id)
     todo = [key for key in by_run if key not in done]
     for key in todo:
-        run_id = tracking.start_run(parent_id, sweep, Run(*key), output_dir)
+        run = Run(*key)
+        run_id = tracking.start_run(parent_id, sweep, run, output_dir)
+        if output_dir is not None:
+            tracking.log_artifacts(run_id, run_artifacts(output_dir, run))
         tracking.log_rows(run_id, by_run[key])
     return len(todo)
 
@@ -345,3 +363,78 @@ def load_runs(
         .sort_values(["experiment", "sweep", *_KEY], kind="stable", na_position="last")
         .reset_index(drop=True)
     )
+
+
+def load_artifacts(
+    name: str,
+    tracking_uri: str | None = None,
+    experiments: Sequence[str] | None = None,
+    sweeps: Sequence[str] | None = None,
+) -> pd.DataFrame:
+    """The artifact ``name`` of every finished run that has it, decoded.
+
+    One row per run, with the columns of `load_runs` that identify it (``experiment``,
+    ``sweep``, ``arch``, ``category``, ``shots``, ``seed``) and ``value`` (see
+    `adcore.evaluation.decode_artifact`). A run recorded twice keeps its latest copy,
+    as in `load_runs`. Each run's file is downloaded, so narrow it down with
+    ``experiments`` / ``sweeps`` on a large store.
+    """
+    from mlflow import MlflowClient
+    from mlflow.artifacts import download_artifacts
+    from mlflow.exceptions import MlflowException
+
+    check_artifact_name(name)
+    uri = tracking_uri or default_tracking_uri()
+    client = MlflowClient(uri)
+    found = client.search_experiments()
+    names = {e.experiment_id: e.name for e in found if experiments is None or e.name in experiments}
+    columns = ["experiment", "sweep", "arch", *_KEY, "value"]
+    if not names:
+        return pd.DataFrame(columns=columns)
+
+    latest: dict[tuple, Any] = {}
+    runs = _search_all(
+        client, list(names), f"tags.{_KIND} = 'run' and attributes.status = 'FINISHED'"
+    )
+    for run in sorted(runs, key=lambda r: r.info.start_time):
+        sweep = run.data.tags.get("sweep")
+        if sweeps is not None and sweep not in sweeps:
+            continue
+        params = run.data.params
+        key = (
+            names[run.info.experiment_id],
+            sweep,
+            params["category"],
+            _parse_shots(params["shots"]),
+            int(params["seed"]),
+        )
+        latest[key] = run
+
+    records = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for (experiment, sweep, category, shots, seed), run in latest.items():
+            try:
+                path = download_artifacts(
+                    run_id=run.info.run_id,
+                    artifact_path=name,
+                    dst_path=str(Path(tmp) / run.info.run_id),
+                    tracking_uri=uri,
+                )
+            except (MlflowException, OSError):  # this run has no such file
+                continue
+            records.append(
+                {
+                    "experiment": experiment,
+                    "sweep": sweep,
+                    "arch": run.data.tags.get("arch"),
+                    "category": category,
+                    "shots": shots,
+                    "seed": seed,
+                    "value": decode_artifact(name, Path(path).read_bytes()),
+                }
+            )
+    frame = pd.DataFrame(records, columns=columns)
+    frame["shots"] = frame["shots"].astype("Int64")
+    return frame.sort_values(
+        ["experiment", "sweep", *_KEY], kind="stable", na_position="last"
+    ).reset_index(drop=True)

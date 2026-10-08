@@ -7,7 +7,7 @@ few-shot experiments.
 
 | module | what |
 | --- | --- |
-| `adcore.module` | `AnomalyModule`: a `LightningModule` whose val/test steps collect predictions and score them per category and defect type |
+| `adcore.module` | `AnomalyModule`: a `LightningModule` whose val/test steps collect predictions and score them per category and defect type, plus an `artifacts` hook for per-run files |
 | `adcore.detectors` | `PatchCore`: extractor + memory bank, fitted in one optimizer-free epoch |
 | `adcore.patchcore` | `PatchcoreModel`: memory bank + nearest-neighbour scoring on an already extracted `(B, C, H, W)` embedding (adapted from [anomalib](https://github.com/open-edge-platform/anomalib)) |
 | `adcore.coreset` | k-center greedy coreset subsampling (adapted from [anomalib](https://github.com/open-edge-platform/anomalib)) |
@@ -17,8 +17,8 @@ few-shot experiments.
 | `adcore.mvtec` | `MVTecDataset`, `few_shot_subset`, `split_by_defect_type` |
 | `adcore.metrics` | image AUROC, pixel AUROC / AUPR / AUPRO from per-image histograms |
 | `adcore.evaluation` | `Predictions`, `score`, and `evaluate(module, loader)` for a one-call `Trainer.test` |
-| `adcore.experiment` | `FewShotExperiment`: categories × shots × seeds, resumable, plus `summarize` / `table` |
-| `adcore.tracking` | `MLflowTracking`: record sweeps in a local MLflow store; `upload_sweep`, `load_runs` |
+| `adcore.experiment` | `FewShotExperiment`: categories × shots × seeds, resumable, plus `summarize` / `table` / `read_artifacts` |
+| `adcore.tracking` | `MLflowTracking`: record sweeps in a local MLflow store; `upload_sweep`, `load_runs`, `load_artifacts` |
 | `adcore.dashboard` | `adcore-dashboard`: Streamlit app comparing sweeps by architecture |
 | `adcore.runner` | `adcore-run`: experiments from Hydra configs, one worker per GPU |
 
@@ -174,6 +174,62 @@ module:
       pred_score_mean: {_target_: adcore.OutputMean, key: pred_score}
 ```
 
+### Per-run artifacts
+
+For data that is not one number, such as the counts behind a histogram of normal vs
+anomalous values, override `artifacts(stage, result)`. It returns files by relative path.
+adcore stores the data; plotting and aggregating it is up to you.
+
+```python
+class CountsByLabel(Metric):            # your own, like EnergyFraction above
+    def __init__(self, n_bins=64, lo=0.0, hi=1.0):
+        super().__init__()
+        self.n_bins, self.lo, self.hi = n_bins, lo, hi
+        self.add_state("counts", torch.zeros(2, n_bins, dtype=torch.float64), dist_reduce_fx="sum")
+    def update(self, batch, output):
+        ef = output["energy_fraction"].mean(1)                            # (B, h, w)
+        anomalous = F.adaptive_max_pool2d(batch["mask"].float(), ef.shape[-2:])[:, 0] > 0
+        for row, keep in enumerate((~anomalous, anomalous)):
+            self.counts[row] += torch.histc(ef[keep].double(), self.n_bins, self.lo, self.hi)
+    def compute(self):
+        return self.counts.sum()
+
+class MyFlow(AnomalyModule):
+    def __init__(self):
+        super().__init__(test_stats={"ef_pixels": CountsByLabel()})
+
+    def artifacts(self, stage, result):
+        if stage != "test":
+            return {}
+        m = self.test_stats["ef_pixels"]
+        return {"ef/counts.npy": m.counts,                                  # (2, n_bins)
+                "ef/bins.json": {"lo": m.lo, "hi": m.hi, "n_bins": m.n_bins}}
+```
+
+- The hook runs after every val / test pass is scored and before `stats` are reset, so it
+  can read metric states as well as `result.predictions`.
+- Values are encoded by type: `bytes` as they are, `str` as text, an array or tensor as
+  `.npy`, anything else as `.json` (tensors and arrays inside become lists). The name's
+  extension must match: `.npy` for arrays, `.json` for the rest.
+- The encoded files are on `val_result.artifacts` / `test_result.artifacts`, and returned
+  by `evaluate`.
+- A few-shot experiment writes the test files to `output_dir/artifacts/<run>/`, and with
+  tracking logs them as the MLflow child run's artifacts. `upload_sweep` uploads them too.
+- Read them back decoded, one row per run (`category`, `shots`, `seed`, `value`):
+
+```python
+from adcore import read_artifacts, load_artifacts
+
+counts = read_artifacts("runs/mvtec_fewshot/my-flow", "ef/counts.npy")        # one sweep directory
+counts = load_artifacts("ef/counts.npy", experiments=["mvtec_fewshot"])        # every sweep in MLflow, plus experiment / sweep / arch
+summed = counts.groupby(["arch", "shots"])["value"].sum()                      # e.g. pool over categories and seeds
+```
+
+Where MLflow keeps artifacts depends on the store. With the default SQLite file they go
+to `./mlruns/`. A tracking server started with `mlflow server` stores them on its own host
+(`--artifacts-destination`, default `./mlartifacts`). `load_artifacts` downloads one file
+per run, so narrow it with `experiments=` / `sweeps=`.
+
 ## Few-shot experiments
 
 ```python
@@ -203,6 +259,7 @@ summarize(results)               # mean/std per metric, plus the category mean
   - `config.json`
   - `results.jsonl`, appended after every run
   - `scores/<run>.csv` with per-image scores
+  - `artifacts/<run>/` with the module's files (see [Per-run artifacts](#per-run-artifacts))
   - `logs/<run>/`, Lightning's CSV logs of training losses and test metrics
 - Rerunning skips runs already in `results.jsonl`, so an interrupted experiment resumes and a wider grid only runs what is new.
 - Each category's test split is decoded once and held in memory for all its runs.
@@ -232,7 +289,7 @@ experiment.run()
 ```
 
 - Each sweep is a parent run named after `output_dir`, unless you pass `sweep=`.
-- Each (category, shots, seed) is a nested child run. Its params are `category`, `shots` (`"full"` for all frames), `seed` and `arch`. Its metrics are the whole-test-set row (`image_auroc`, …) plus `defect/<type>/<metric>` for each defect type, and the module's `stat/<name>` values (see [Tracking model statistics](#tracking-model-statistics)).
+- Each (category, shots, seed) is a nested child run. Its params are `category`, `shots` (`"full"` for all frames), `seed` and `arch`. Its metrics are the whole-test-set row (`image_auroc`, …) plus `defect/<type>/<metric>` for each defect type, and the module's `stat/<name>` values (see [Tracking model statistics](#tracking-model-statistics)). Its artifacts are the module's per-run files (see [Per-run artifacts](#per-run-artifacts)).
 - Trainable modules also log their training losses to the child run, through Lightning's `MLFlowLogger`.
 - The store is `$MLFLOW_TRACKING_URI` when it is set, e.g. `http://mlflow-host:5000`; otherwise it is `mlflow.db` in the working directory. Pass `tracking_uri=...` to override either. MLflow reads its credentials (`MLFLOW_TRACKING_USERNAME`, `MLFLOW_TRACKING_PASSWORD`, `MLFLOW_TRACKING_TOKEN`) from the environment itself.
 - `results.jsonl` stays the source of truth for resuming. When a sweep starts tracking, its runs already in `results.jsonl` are copied into MLflow first.

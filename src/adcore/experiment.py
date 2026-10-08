@@ -19,7 +19,9 @@ A trainable module works the same way; give the Trainer its epochs with
 
 With an ``output_dir`` every finished run is appended to ``results.jsonl`` straight away,
 and a rerun skips the runs already there, so an interrupted experiment resumes. Each
-run's Lightning logs (training losses, test metrics) go to ``logs/<run>/``.
+run's Lightning logs (training losses, test metrics) go to ``logs/<run>/``, and the files
+its module returns from `AnomalyModule.artifacts` to ``artifacts/<run>/``
+(`read_artifacts`).
 
 With ``tracking=MLflowTracking(experiment="mvtec-fewshot", arch="patchcore-wrn50")``
 every run is also recorded in MLflow, to compare sweeps in ``adcore-dashboard``; see
@@ -47,7 +49,7 @@ from lightning.pytorch.utilities.model_helpers import is_overridden
 from tqdm.auto import tqdm
 
 from adcore.datamodule import AugmentSpec, CachedDataset, MVTecDataModule
-from adcore.evaluation import METRICS, STAT
+from adcore.evaluation import METRICS, STAT, check_artifact_name, decode_artifact
 from adcore.module import AnomalyModule
 from adcore.mvtec import MVTEC, DatasetSpec, MVTecDataset, default_transform
 
@@ -107,8 +109,8 @@ class FewShotExperiment:
         seeds: One run per seed. The seed picks the shots (and anomalous training
             frames) and goes to ``L.seed_everything`` before the module is built.
         output_dir: Where ``config.json``, ``results.jsonl``, per-image
-            ``scores/<run>.csv`` and Lightning ``logs/<run>/`` go. None keeps results in
-            memory only.
+            ``scores/<run>.csv``, the module's ``artifacts/<run>/`` and Lightning
+            ``logs/<run>/`` go. None keeps results in memory only.
         trainer_kwargs: ``Trainer`` arguments, or a function of the `Run` returning them,
             over the defaults: one device, ``max_epochs=1``, CSV logging into
             ``output_dir``, no checkpointing, no progress bar.
@@ -169,6 +171,7 @@ class FewShotExperiment:
         self.num_workers = num_workers
         self.cache_test_set = cache_test_set
         self._rows: list[dict[str, Any]] = []
+        self._artifacts: dict[str, dict[str, bytes]] = {}  # by run name, without output_dir
         self.tracking = tracking
         self.metadata = dict(metadata or {})
         self._sweep_id: str | None = None
@@ -213,6 +216,14 @@ class FewShotExperiment:
     def results(self) -> pd.DataFrame:
         """Every recorded row, including those from earlier sessions in ``output_dir``."""
         return results_frame(self._load_rows())
+
+    def artifacts(self, name: str) -> pd.DataFrame:
+        """The artifact ``name`` of every recorded run that has it; see `read_artifacts`."""
+        if self.output_dir is not None:
+            return read_artifacts(self.output_dir, name)
+        return _artifact_frame(
+            self._rows, lambda run: self._artifacts.get(run.name, {}).get(name), name
+        )
 
     @property
     def sweep(self) -> str | None:
@@ -348,6 +359,7 @@ class FewShotExperiment:
                 self.tracking.fail_run(mlflow_run_id)
             raise
         if mlflow_run_id is not None:
+            self.tracking.log_artifacts(mlflow_run_id, outcome["artifacts"])
             self.tracking.log_rows(mlflow_run_id, [_jsonable(r) for r in outcome["rows"]])
         return outcome
 
@@ -392,27 +404,88 @@ class FewShotExperiment:
             }
             for row in result.metrics.to_dict("records")
         ]
-        return {"run": run, "rows": rows, "scores": result.predictions.scores_frame()}
+        return {
+            "run": run,
+            "rows": rows,
+            "scores": result.predictions.scores_frame(),
+            "artifacts": result.artifacts,
+        }
 
     def track(self, outcome: dict[str, Any]) -> None:
         """Copy an outcome from a process without tracking into MLflow, final metrics only."""
         run_id = self.tracking.start_run(
             self.start_sweep(), self.sweep, outcome["run"], self.output_dir
         )
+        self.tracking.log_artifacts(run_id, outcome["artifacts"])
         self.tracking.log_rows(run_id, [_jsonable(r) for r in outcome["rows"]])
 
     def record(self, outcome: dict[str, Any]) -> None:
-        """Append an outcome of `run_one` to ``results.jsonl`` and ``scores/``."""
+        """Append an outcome of `run_one` to ``results.jsonl``, ``scores/`` and ``artifacts/``."""
         rows = [_jsonable(row) for row in outcome["rows"]]
+        name = outcome["run"].name
         if self.output_dir is None:
             self._rows += rows
+            self._artifacts[name] = outcome["artifacts"]
             return
+        # Before results.jsonl, so a run counted as done always has its files.
+        for path, data in outcome["artifacts"].items():
+            target = self.output_dir / "artifacts" / name / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
         with self.results_path.open("a") as f:
             for row in rows:
                 f.write(json.dumps(row) + "\n")
         scores_dir = self.output_dir / "scores"
         scores_dir.mkdir(exist_ok=True)
-        outcome["scores"].to_csv(scores_dir / f"{outcome['run'].name}.csv", index=False)
+        outcome["scores"].to_csv(scores_dir / f"{name}.csv", index=False)
+
+
+def run_artifacts(output_dir: str | Path, run: Run) -> dict[str, bytes]:
+    """Every file under ``output_dir/artifacts/<run>/``, encoded, by relative path."""
+    directory = Path(output_dir) / "artifacts" / run.name
+    if not directory.is_dir():
+        return {}
+    return {
+        path.relative_to(directory).as_posix(): path.read_bytes()
+        for path in sorted(directory.rglob("*"))
+        if path.is_file()
+    }
+
+
+def read_artifacts(output_dir: str | Path, name: str) -> pd.DataFrame:
+    """The artifact ``name`` of every run in a sweep directory's ``results.jsonl``.
+
+    One row per run that has it: ``category``, ``shots`` (<NA> is full-shot), ``seed`` and
+    the decoded ``value`` (see `adcore.evaluation.decode_artifact`). Aggregate it as you
+    like, e.g. sum histogram counts over seeds.
+    """
+    check_artifact_name(name)
+    output_dir = Path(output_dir)
+    results = output_dir / "results.jsonl"
+    rows = []
+    if results.exists():
+        with results.open() as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+
+    def data(run: Run) -> bytes | None:
+        path = output_dir / "artifacts" / run.name / name
+        return path.read_bytes() if path.is_file() else None
+
+    return _artifact_frame(rows, data, name)
+
+
+def _artifact_frame(
+    rows: Sequence[dict[str, Any]], data: Callable[[Run], bytes | None], name: str
+) -> pd.DataFrame:
+    runs = dict.fromkeys(Run(row["category"], row["shots"], row["seed"]) for row in rows)
+    records = [
+        {**asdict(run), "value": decode_artifact(name, found)}
+        for run in runs
+        if (found := data(run)) is not None
+    ]
+    frame = pd.DataFrame(records, columns=["category", "shots", "seed", "value"])
+    frame["shots"] = frame["shots"].astype("Int64")
+    return frame
 
 
 def _jsonable(row: dict[str, Any]) -> dict[str, Any]:

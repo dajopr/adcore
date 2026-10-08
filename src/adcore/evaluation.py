@@ -7,10 +7,13 @@ one-call version for a module that is already fitted:
     result = evaluate(module, test_loader)
     result.metrics          # one row per (category, defect_type), "all" first
     result.predictions      # the collected labels, scores, masks and maps
+    result.artifacts        # files from the module's `artifacts` hook, encoded
 """
 
 from __future__ import annotations
 
+import io
+import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -74,11 +77,65 @@ class EvalResult:
     predictions: Predictions
     # The module's own statistics over the whole eval set; see `AnomalyModule` ``stats``.
     stats: dict[str, float] = field(default_factory=dict)
+    # Files from `AnomalyModule.artifacts`, encoded; see `encode_artifact`.
+    artifacts: dict[str, bytes] = field(default_factory=dict)
 
     @property
     def overall(self) -> pd.DataFrame:
         """One row per category: the metrics over its whole test set."""
         return self.metrics[self.metrics["defect_type"] == "all"].reset_index(drop=True)
+
+
+def check_artifact_name(name: str) -> str:
+    """A relative path with ``/`` separators that stays inside the run's directory."""
+    if "\\" in name or any(part in ("", ".", "..") for part in name.split("/")):
+        raise ValueError(
+            f"artifact name {name!r} must be a relative path like 'counts.json' or 'ef/normal.npy'"
+        )
+    return name
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().tolist()
+    if isinstance(value, (np.ndarray, np.generic)):
+        return value.tolist()
+    raise TypeError(f"{type(value).__name__} is not JSON serializable")
+
+
+def encode_artifact(name: str, value: Any) -> bytes:
+    """``value`` as the bytes of the file ``name``.
+
+    ``bytes`` are kept, ``str`` is UTF-8, an array or tensor is a ``.npy`` file and anything
+    else is JSON, with arrays and tensors inside it as lists.
+    """
+    check_artifact_name(name)
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, str):
+        return value.encode()
+    if isinstance(value, (np.ndarray, torch.Tensor)):
+        if not name.endswith(".npy"):
+            raise ValueError(f"artifact {name!r} holds an array; name it '*.npy'")
+        if isinstance(value, torch.Tensor):
+            value = value.detach().cpu().numpy()
+        buffer = io.BytesIO()
+        np.save(buffer, value, allow_pickle=False)
+        return buffer.getvalue()
+    if not name.endswith(".json"):
+        raise ValueError(f"artifact {name!r} is stored as JSON; name it '*.json'")
+    return json.dumps(value, default=_jsonable).encode()
+
+
+def decode_artifact(name: str, data: bytes) -> Any:
+    """The inverse of `encode_artifact`, by extension: ``.json``, ``.npy``, ``.txt``, else bytes."""
+    if name.endswith(".json"):
+        return json.loads(data)
+    if name.endswith(".npy"):
+        return np.load(io.BytesIO(data), allow_pickle=False)
+    if name.endswith(".txt"):
+        return data.decode()
+    return data
 
 
 def _as_maps(anomaly_map: torch.Tensor, size: tuple[int, int]) -> np.ndarray:

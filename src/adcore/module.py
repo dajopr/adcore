@@ -16,6 +16,11 @@ A module can also track its own statistics with ``stats``: a torchmetrics
 full ``forward`` output — and return one scalar from ``compute()``. They are updated every
 val / test batch, computed over the whole eval set, logged as ``{stage}/stat/{name}`` and
 kept on ``val_result.stats`` / ``test_result.stats``.
+
+For data that is not one number, e.g. the counts behind a histogram, override
+`AnomalyModule.artifacts`: it returns files by name, kept encoded on
+``val_result.artifacts`` / ``test_result.artifacts`` and stored per run by a few-shot
+experiment.
 """
 
 from __future__ import annotations
@@ -31,6 +36,7 @@ from adcore.evaluation import (
     STAT,
     EvalResult,
     PredictionCollector,
+    encode_artifact,
     score,
 )
 from adcore.metrics import (
@@ -89,6 +95,17 @@ class AnomalyModule(L.LightningModule):
         """
         raise NotImplementedError
 
+    def artifacts(self, stage: str, result: EvalResult) -> dict[str, Any]:
+        """Files to keep from this val / test pass, by relative path; none by default.
+
+        Called once the pass is scored and before ``stats`` are reset, so an override can
+        read its metrics' states (``self.test_stats["name"].counts``) as well as
+        ``result``. Values are stored by `adcore.evaluation.encode_artifact`: ``bytes``
+        as is, ``str`` as text, an array or tensor as ``.npy``, anything else as
+        ``.json``.
+        """
+        return {}
+
     # --- evaluation -----------------------------------------------------------------
 
     def _collect(self, stage: str, batch: dict[str, Any]) -> dict[str, torch.Tensor]:
@@ -115,7 +132,6 @@ class AnomalyModule(L.LightningModule):
                     "scalar per metric (split a vector into one metric per reduction)"
                 )
             values[name] = float(value)
-        stats.reset()
         return values
 
     def _finish(self, stage: str) -> EvalResult | None:
@@ -137,6 +153,12 @@ class AnomalyModule(L.LightningModule):
         result = EvalResult(
             metrics=metrics, predictions=predictions, stats=self._compute_stats(stage)
         )
+        result.artifacts = {
+            name: encode_artifact(name, value)
+            for name, value in self.artifacts(stage, result).items()
+        }
+        if (stats := self._stats(stage)) is not None:
+            stats.reset()
 
         overall = result.overall
         logged = {f"{stage}/{m}": float(overall[m].mean()) for m in METRICS}
