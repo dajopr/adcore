@@ -4,7 +4,7 @@
     adcore-dashboard --tracking-uri sqlite:////abs/path/mlflow.db --port 8501
 
 All statistics come from `adcore.experiment.summarize` / `table`, applied per group
-(architecture or sweep), so the numbers match what those print locally.
+(architecture, hyperparameter variant or sweep), so the numbers match what those print locally.
 
 Needs the ``track`` extra (``mlflow``, ``streamlit``, ``plotly``).
 """
@@ -188,7 +188,15 @@ def app() -> None:
             st.info("No finished runs in this experiment yet.")
             st.stop()
 
-        group_by = st.radio("Compare by", ["arch", "sweep"], horizontal=True)
+        group_by = st.radio("Compare by", ["arch", "variant", "sweep"], horizontal=True)
+        if group_by == "variant":
+            # A variant is a hyperparameter combination of one arch; label it with both.
+            results = results.assign(
+                variant=[
+                    f"{arch}[{variant}]" if variant else arch
+                    for arch, variant in zip(results["arch"], results["variant"].fillna(""))
+                ]
+            )
         all_groups = sorted(results[group_by].dropna().unique())
         sweeps = st.multiselect(
             "Sweeps", sorted(results["sweep"].unique()), default=sorted(results["sweep"].unique())

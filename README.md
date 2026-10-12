@@ -294,9 +294,9 @@ experiment.run()
 - The store is `$MLFLOW_TRACKING_URI` when it is set, e.g. `http://mlflow-host:5000`; otherwise it is `mlflow.db` in the working directory. Pass `tracking_uri=...` to override either. MLflow reads its credentials (`MLFLOW_TRACKING_USERNAME`, `MLFLOW_TRACKING_PASSWORD`, `MLFLOW_TRACKING_TOKEN`) from the environment itself.
 - `results.jsonl` stays the source of truth for resuming. When a sweep starts tracking, its runs already in `results.jsonl` are copied into MLflow first.
 - To add a sweep that ran before tracking existed, call `upload_sweep("runs/old-sweep", MLflowTracking(experiment="mvtec-fewshot", arch="..."))`. Calling it again adds nothing.
-- `load_runs(uri, experiments=[...])` returns the rows of `results.jsonl` with `arch`, `sweep` and `experiment` columns added. `summarize` and `table` work on any subset of them.
+- `load_runs(uri, experiments=[...])` returns the rows of `results.jsonl` with `arch`, `variant`, `sweep` and `experiment` columns added. `summarize` and `table` work on any subset of them.
 
-Start the dashboard with `adcore-dashboard [--tracking-uri URI] [--port 8501]`. The URI defaults to the same store. It compares by `arch` or by sweep, and has these tabs:
+Start the dashboard with `adcore-dashboard [--tracking-uri URI] [--port 8501]`. The URI defaults to the same store. It compares by `arch`, by hyperparameter variant (see [Hyperparameter sweeps](#hyperparameter-sweeps)) or by sweep, and has these tabs:
 
 - **Overview**: the metric against shots, with the std over seeds as a band.
 - **Per category**: one small plot per category.
@@ -368,6 +368,27 @@ cd my-repo && adcore-run --config-dir configs model=my_detector experiment=mvtec
 - Rerunning the same command resumes, and a wider grid only runs what is new.
 - `config.json` records a hash of the model config and of the experiment settings, leaving out the grid and loader settings. If you change those settings and run into the same directory, the run stops with an error instead of mixing results. Pass `force=true` to add to it anyway.
 - Tracking is on by default: the MLflow experiment is `experiment.name` and `arch` is `model.name`. Every key of the model config is logged as a `model.*` param, e.g. `model.shared.extractor.model_name`. Turn it off with `tracking.enabled=false`.
+
+### Hyperparameter sweeps
+
+Give a `model.*` key several values in a multirun, and every combination is its own job:
+
+```bash
+adcore-run -m model=patchcore_wrn50 experiment=mvtec_fewshot \
+  model.shared.extractor.model_name=wide_resnet50_2,resnet18 \
+  model.module.sampling_ratio=0.1,0.01
+```
+
+- Each job's `model.*` overrides make up its `variant`, e.g. `model_name=resnet18,sampling_ratio=0.1`. A key is shortened to its last segment unless two overrides share it. `model.name` and other overrides (`experiment.*`, `launcher.*`, …) are not part of it, so a job resumes when the grid grows.
+- A variant gets its own directory, `runs/mvtec-fewshot/patchcore-wrn50/model_name=resnet18,sampling_ratio=0.1/`, and its own sweep in MLflow, `patchcore-wrn50[model_name=resnet18,sampling_ratio=0.1]`, with the tag `variant`. Without `model.*` overrides, nothing changes: no variant, and the directory and sweep are named as before.
+- Name a variant yourself with `variant=my-label`, which also works outside a multirun.
+- Telling runs apart:
+  - In the dashboard, choose **Compare by: variant**.
+  - In `mlflow ui`, every child run has each model setting as a param, so you can filter with `params."model.module.sampling_ratio" = '0.1'` or `tags.variant = '...'`.
+  - In Python, `load_runs(experiments=["mvtec-fewshot"])` has a `variant` column, so `table(results[results.variant == v], "image_auroc")` works per combination.
+- The jobs run one after another; each can still use `launcher=gpus`.
+- `arch` stays `model.name`. When sweeping backbones, a name like `patchcore-wrn50` is misleading, so set `model.name=patchcore` too. Also make sure `out_indices` suits every backbone.
+- A downstream `@hydra.main` must import `adcore.runner` before Hydra composes the config, because `variant` comes from the resolver registered there.
 
 ### Several GPUs
 

@@ -4,6 +4,7 @@
     adcore-run model=patchcore_wrn50 experiment=visa_fewshot launcher=gpus launcher.devices=[0,1]
     adcore-run --config-dir configs model=my_model experiment=mvtec_fewshot   # downstream repo
     adcore-run -m model=patchcore_wrn50,my_model experiment=mvtec_fewshot     # one after another
+    adcore-run -m model.module.sampling_ratio=0.1,0.01                         # a hyperparameter grid
 
 The config has a ``model`` (``shared`` objects built once per process, a ``module`` built
 per run, transforms, Trainer kwargs), an ``experiment`` (dataset, categories, shots,
@@ -13,7 +14,8 @@ can come from any package: the only requirement is that it is an `AnomalyModule`
 With several GPU slots, each slot is a spawned worker process that sees only its GPU and
 takes whole categories off a queue, so a category's test split is still decoded once.
 Workers send their outcomes back and this process alone writes ``results.jsonl``, so
-resuming works as with `FewShotExperiment.run`. Workers log to MLflow themselves
+resuming works as with `FewShotExperiment.run`. Each combination of ``model.*`` overrides is a *variant*
+with its own output directory and MLflow sweep, tagged ``variant``. Workers log to MLflow themselves
 (including training curves) only when the store is a server; with SQLite this process
 records the final metrics instead.
 
@@ -53,6 +55,41 @@ _SPECS = {spec.name: spec for spec in (MVTEC, VISA)}
 _UNHASHED = ("name", "categories", "shots", "seeds", "batch_size", "num_workers", "cache_test_set")
 # MLflow stores that tolerate writes from several processes.
 _CONCURRENT_SCHEMES = ("http", "https", "databricks", "postgresql", "mysql", "mssql")
+
+
+def _variant_from_overrides(overrides: Sequence[str]) -> str:
+    """The label of a job's ``model.*`` overrides, e.g. ``model_name=resnet18,sampling_ratio=0.1``.
+
+    Keys are the last path segment, or the whole path after ``model.`` when two overrides
+    share one. Group choices (``model=...``), ``model.name`` and other overrides are left
+    out, so a growing grid (``experiment.shots``) keeps the label.
+    """
+    pairs = {}
+    for override in overrides:
+        key, sep, value = override.lstrip("+~").partition("=")
+        # model.name is already the arch and a directory level.
+        if sep and key.startswith("model.") and key != "model.name":
+            pairs[key.removeprefix("model.")] = value
+    last = [key.rsplit(".", 1)[-1] for key in pairs]
+    labels = {
+        (short if last.count(short) == 1 else key): value
+        for key, short, value in zip(pairs, last, pairs.values())
+    }
+    # A value may be a path or hub id; keep the label one directory level.
+    return ",".join(f"{k}={v}".replace("/", "_") for k, v in sorted(labels.items()))
+
+
+def _variant() -> str:
+    from hydra.core.hydra_config import HydraConfig
+
+    if not HydraConfig.initialized():
+        return ""
+    return _variant_from_overrides(HydraConfig.get().overrides.task)
+
+
+# Used by adcore.yaml: `variant` and the per-variant output directory.
+OmegaConf.register_new_resolver("adcore.variant", _variant, replace=True)
+OmegaConf.register_new_resolver("adcore.subdir", lambda name: f"/{name}" if name else "", replace=True)
 
 
 def _build(node: Any) -> Any:
@@ -132,14 +169,20 @@ def _tracking(cfg: DictConfig):
     from adcore.tracking import MLflowTracking, default_tracking_uri
 
     model = OmegaConf.to_container(cfg.model, resolve=True)
-    model.pop("name", None)
+    name = model.pop("name", None)
+    tags = dict(settings.tags)
+    sweep = settings.sweep
+    if variant := cfg.get("variant"):
+        tags["variant"] = variant
+        # The output directory is named after the variant alone; keep the model in the sweep.
+        sweep = sweep or f"{name}[{variant}]"
     return MLflowTracking(
         experiment=settings.experiment,
         arch=settings.arch,
         tracking_uri=settings.tracking_uri or default_tracking_uri(),
         params=_flatten(model, "model"),
-        tags=dict(settings.tags),
-        sweep=settings.sweep,
+        tags=tags,
+        sweep=sweep,
     )
 
 

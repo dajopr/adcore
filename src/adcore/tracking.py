@@ -304,7 +304,8 @@ def load_runs(
     sweeps: Sequence[str] | None = None,
 ) -> pd.DataFrame:
     """Every finished run's rows, shaped like `adcore.experiment.results_frame` output,
-    plus ``experiment``, ``sweep`` and ``arch`` columns.
+    plus ``experiment``, ``sweep``, ``arch`` and ``variant`` columns. ``variant`` is the
+    hyperparameter label ``adcore-run`` gives a sweep (``""`` for none).
 
     The rows are those of ``results.jsonl``, so `adcore.experiment.summarize` and
     `adcore.experiment.table` work on any subset (e.g. one ``arch``).
@@ -333,6 +334,7 @@ def load_runs(
             "experiment": names[run.info.experiment_id],
             "sweep": tags.get("sweep"),
             "arch": tags.get("arch"),
+            "variant": tags.get("variant", ""),
             "category": params["category"],
             "shots": _parse_shots(params["shots"]),
             "seed": int(params["seed"]),
@@ -374,7 +376,7 @@ def load_artifacts(
     """The artifact ``name`` of every finished run that has it, decoded.
 
     One row per run, with the columns of `load_runs` that identify it (``experiment``,
-    ``sweep``, ``arch``, ``category``, ``shots``, ``seed``) and ``value`` (see
+    ``sweep``, ``arch``, ``variant``, ``category``, ``shots``, ``seed``) and ``value`` (see
     `adcore.evaluation.decode_artifact`). A run recorded twice keeps its latest copy,
     as in `load_runs`. Each run's file is downloaded, so narrow it down with
     ``experiments`` / ``sweeps`` on a large store.
@@ -388,7 +390,7 @@ def load_artifacts(
     client = MlflowClient(uri)
     found = client.search_experiments()
     names = {e.experiment_id: e.name for e in found if experiments is None or e.name in experiments}
-    columns = ["experiment", "sweep", "arch", *_KEY, "value"]
+    columns = ["experiment", "sweep", "arch", "variant", *_KEY, "value"]
     if not names:
         return pd.DataFrame(columns=columns)
 
@@ -427,6 +429,7 @@ def load_artifacts(
                     "experiment": experiment,
                     "sweep": sweep,
                     "arch": run.data.tags.get("arch"),
+                    "variant": run.data.tags.get("variant", ""),
                     "category": category,
                     "shots": shots,
                     "seed": seed,
