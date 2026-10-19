@@ -87,7 +87,7 @@ def convert_visa(
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])  # type: ignore
     parser.add_argument("src", type=Path, help="raw VisA root")
     parser.add_argument("dst", type=Path, help="output root, e.g. <src>/visa_pytorch")
     parser.add_argument(

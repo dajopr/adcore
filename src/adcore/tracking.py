@@ -156,23 +156,37 @@ class MLflowTracking:
 
     def start_run(self, parent_id: str, sweep: str, run: Run, output_dir: Path | None = None) -> str:
         """A child run for one (category, shots, seed)."""
+        return self.start_child(
+            parent_id,
+            sweep,
+            run.name,
+            {"category": run.category, "shots": _shots_param(run.shots), "seed": run.seed},
+            output_dir,
+        )
+
+    def start_child(
+        self,
+        parent_id: str,
+        sweep: str,
+        name: str,
+        params: dict[str, Any],
+        output_dir: Path | None = None,
+    ) -> str:
+        """A child run of the sweep named ``name``, with ``params`` on top of the sweep's
+        own; for experiments whose runs are not a (category, shots, seed)."""
         tags = {**self._tags(sweep, "run"), _PARENT: parent_id}
         if output_dir is not None:
             tags["output_dir"] = str(output_dir)
         run_id = self.client.create_run(
-            self.experiment_id, run_name=run.name, tags=tags
+            self.experiment_id, run_name=name, tags=tags
         ).info.run_id
-        self._log(
-            run_id,
-            params={
-                **self.params,
-                "arch": self.arch,
-                "category": run.category,
-                "shots": _shots_param(run.shots),
-                "seed": run.seed,
-            },
-        )
+        self._log(run_id, params={**self.params, "arch": self.arch, **params})
         return run_id
+
+    def finish_child(self, run_id: str, metrics: dict[str, float]) -> None:
+        """Log a child run's final ``metrics`` and mark it finished."""
+        self._log(run_id, metrics=metrics)
+        self.client.set_terminated(run_id)
 
     def log_rows(self, run_id: str, rows: Sequence[dict[str, Any]]) -> None:
         """A run's ``results.jsonl`` rows as metrics, and the run marked finished."""
@@ -183,8 +197,7 @@ class MLflowTracking:
                     continue
                 name = column if column in _RUN_FIELDS else _metric_name(row["defect_type"], column)
                 metrics[name] = float(value)
-        self._log(run_id, metrics=metrics)
-        self.client.set_terminated(run_id)
+        self.finish_child(run_id, metrics)
 
     def log_artifacts(self, run_id: str, artifacts: dict[str, bytes]) -> None:
         """A run's encoded files (`adcore.evaluation.EvalResult.artifacts`) as artifacts."""
