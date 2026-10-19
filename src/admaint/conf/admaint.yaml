@@ -1,0 +1,37 @@
+# admaint-run's primary config. Pick a model and a scenario:
+#   admaint-run model=patchcore_wrn50_maint scenario=contamination
+defaults:
+  - model: patchcore_wrn50_maint
+  - scenario: contamination
+  - _self_
+
+# One directory per (scenario, model, variant): rerunning resumes it.
+output_root: runs
+# The model.* overrides on the command line, as for adcore-run; set it to name one.
+variant: ${adcore.variant:}
+output_dir: ${output_root}/${scenario.name}/${model.name}${adcore.subdir:${variant}}
+# Resume even though model/scenario settings changed since the directory was made.
+force: false
+progress: true
+# GPU index for every run; null = the Trainer's default device.
+device: null
+# Fit once per distinct initial training set and restore it for the runs that share it.
+cache_fits: true
+
+tracking:
+  enabled: true
+  experiment: ${scenario.name}
+  arch: ${model.name}
+  tracking_uri: null  # null: $MLFLOW_TRACKING_URI, else sqlite:///mlflow.db
+  sweep: null         # null: <model.name>[<variant>] with a variant, else the name of output_dir
+  tags: {}
+
+hydra:
+  job:
+    name: admaint
+    chdir: false
+  run:
+    dir: ${output_dir}
+  sweep:
+    dir: ${output_root}
+    subdir: ${scenario.name}/${model.name}${adcore.subdir:${variant}}

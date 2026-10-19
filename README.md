@@ -414,3 +414,148 @@ The vendored sections are marked in the source; see [NOTICE](NOTICE).
 ## License
 
 adcore is licensed under the [Apache License 2.0](LICENSE).
+
+## Model maintenance (`admaint`)
+
+`admaint` (in `src/admaint`, installed with adcore) studies updating a fitted detector in
+place: fit, evaluate, apply one or more update steps, evaluate after each.
+
+| module | what |
+| --- | --- |
+| `admaint.maintainable` | `Maintainable` mixin: `add_representation(images, masks=None)`, `remove_representation(images, masks=None)`, `maintenance_stats()`; `patch_mask` maps pixel masks to a feature grid |
+| `admaint.patchcore` | `MaintainablePatchCore`: appends masked patches to the memory bank, or deletes the `remove_k` nearest bank entries of each masked patch |
+| `admaint.protocol` | the data of a run: initial set, update steps, eval sets, label views, threshold calibration |
+| `admaint.experiment` | `MaintenanceExperiment`, `MaintRun`, `before_after` |
+| `admaint.runner` | `admaint-run`: experiments from Hydra configs |
+| `admaint.summary` | `scorecard`, `admaint-summary`: adaptability per model, aggregated over sweeps |
+
+A maintainable module is an `AnomalyModule` that also implements the two operations.
+`images` come transformed like the eval set, `masks` are `(B, 1, H, W)` 0/1 or None for
+the whole image:
+
+```python
+class MyDetector(AnomalyModule, Maintainable):
+    def add_representation(self, images, masks=None): ...     # masked regions are nominal
+    def remove_representation(self, images, masks=None): ...  # ... no longer nominal
+```
+
+### Scenarios
+
+| scenario | initial fit | steps | evaluated |
+| --- | --- | --- | --- |
+| `contamination` | `shots` good frames + `n_contam` frames of a target defect type, fed as good | remove `n_update` held-out target frames, with masks | target stays anomalous; `n_contam=0` is the clean control |
+| `extension` | `shots` good frames | add `n_update` target frames, with masks | view `extended` scores the target as good, `original` as anomalous |
+| `stepwise` | `shots` good frames | add good frames whole, up to `steps[i]` after step i | each step |
+| `drift` | `shots` good frames | add `n_update` good frames under a named `shift`; with `retire`, then remove the initial frames | `source` (test split as is) and `target` (shifted) |
+
+- Two seeds draw the frames, per category:
+  - The **fit seed** (`seeds`) draws what the module is fitted on: the initial good
+    frames (adcore's n-shot set, `few_shot_subset`), the contaminants, and the last
+    `n_calibration` good training frames, which calibrate a threshold and are never
+    trained on.
+  - The **update seed** (`update_seeds`) draws the update frames, and so which target
+    frames are left for evaluation. It also seeds the updates themselves.
+- Target-defect draws, per (category, target):
+  - Contaminants come from the back of a fit-seed permutation.
+  - The remaining frames are permuted with the update seed. Updates take the front, and
+    the eval keeps what follows a reserve sized by the grid's largest `n_update`.
+  - So, for a given pair of seeds, the eval set is identical across the `n_update` /
+    `n_contam` grids and never contains an update or contaminant frame.
+  - Defect types with fewer than `min_eval` frames left are skipped with a warning.
+- Fit reuse (`cache_fits`, on by default):
+  - Runs that differ only in their update seed, `n_update`, or the target of a clean
+    run share a fit.
+  - The experiment groups them, fits once, and restores the fit into a fresh module for
+    each of them (`Maintainable.fit_state` / `load_fit_state`). Results are
+    bit-identical to refitting.
+  - So extra update seeds cost updates and evaluations, not fits.
+  - The default `fit_state` copies the whole `state_dict`, frozen backbones included.
+    A model can override it to keep only what fitting changes, as `MaintainablePatchCore`
+    does with its memory bank.
+  - The module factory must not depend on run fields outside `fit_key`.
+  - Each row records `fit_reused`.
+- Every phase is scored on every eval set and view. The `defect_type == "all"` row also
+  carries:
+  - `threshold`, at `calibration_fpr` of the calibration frames and recalibrated every
+    phase; under drift it comes from unshifted frames for both domains;
+  - `nominal_fpr`, `defect_detect_rate` and `target_detect_rate`: the fraction of
+    frames above that threshold, by their original labels;
+  - the module's `maintenance_stats()` (e.g. `bank_size`, `n_added`, `n_removed`).
+
+```python
+from admaint import MaintainablePatchCore, MaintenanceExperiment, before_after
+
+experiment = MaintenanceExperiment(
+    root,
+    module_factory=lambda run: MaintainablePatchCore(extractor, sampling_ratio=1.0),
+    scenario="contamination",
+    shots=(8,), n_contam=(0, 1, 2), n_update=(1, 2), seeds=(0, 1, 2),
+    output_dir="runs/mvtec-contamination/patchcore-wrn50",
+)
+results = experiment.run()   # one row per (run, phase, eval_set, view, defect_type)
+before_after(results, "image_auroc", defect_type="target")         # phase 0 vs last phase
+before_after(results, "target_detect_rate", view="extended")       # extension
+```
+
+`output_dir` gets `config.json`, `results.jsonl` (resumable, as for few-shot experiments),
+`scores/<run>/phase<i>_<eval_set>.csv`, `artifacts/<run>/phase<i>/<eval_set>/` and `logs/`.
+With `tracking=MLflowTracking(...)` each run is an MLflow child run with the `MaintRun`
+fields as params and metrics named `phase<i>/<eval_set>/<view>/<defect_type>/<metric>`.
+
+### Running from configs
+
+```bash
+export MVTEC_ROOT=/data/shared-data/public_datasets/raw/MVTec
+admaint-run scenario=contamination
+admaint-run scenario=extension scenario.categories=[bottle] scenario.n_update=[1,4] device=2
+admaint-run scenario=drift scenario.retire=true
+admaint-run -m scenario=contamination,extension,stepwise,drift
+```
+
+- The configs live in [src/admaint/conf](src/admaint/conf):
+  - `model/patchcore_wrn50_maint.yaml` has the same layout as adcore's model configs, but
+    its module must be `Maintainable`;
+  - `scenario/*.yaml` holds the dataset, the `kind` and the grid; drift's `shifts` are
+    named torchvision v2 transforms.
+- Output goes to `runs/<scenario.name>/<model.name>[/<variant>]`, and rerunning resumes.
+  `model.*` overrides make variants, as with `adcore-run`.
+- The resume check hashes the model and the scenario settings outside the grid. A shift
+  is known only by its name, so give a changed shift a new name.
+- Runs go one after another on one device (`device=<gpu index>`).
+
+### Scorecard
+
+`admaint-summary` gives one column per model (each variant counts as a model) and a few
+metrics per scenario, read from every admaint sweep under an `output_root`:
+
+```bash
+admaint-summary runs                                  # all sweeps; --csv card.csv to keep the numbers
+admaint-summary runs --experiments mvtec-contamination mvtec-extension
+```
+
+```python
+from admaint import format_scorecard, load_results, scorecard
+
+card = scorecard(load_results("runs"))   # (dataset, model) x (scenario, metric, mean/std)
+format_scorecard(card)                   # "mean ± std" over seeds
+```
+
+| scenario | headline | side effects |
+| --- | --- | --- |
+| `contamination` | `recovery`: share of the contamination's target-AUROC loss won back by the update (1 = full), pooled over runs that lost more than `min_damage` (0.01) | `damage` (clean − contaminated target AUROC); `control_other_auroc_delta`, `control_fpr_delta`: what the update does to a clean model (`n_contam=0`) |
+| `extension` | `acceptance`: target frames below the threshold after the update | `extended_auroc_delta` (target scored as good); `other_auroc_delta` |
+| `stepwise` | `auc`: image AUROC averaged over the good frames seen (area under the curve / its width) | `final_auroc`; `update_ms_per_frame` |
+| `drift` | `target_auroc_delta` at the update (`retire` is left out) | `target_fpr_after` (threshold from unshifted frames); `source_auroc_delta` |
+
+- Averaging: values are averaged within each category first, then over categories, so a
+  category with many defect types counts once. This happens per (fit seed, update seed);
+  `recovery` is a ratio of sums over that pair's damaged runs instead.
+- Spread: update seeds are averaged within each fit seed. `mean` and `std` are over fit
+  seeds. `update_std` is the spread across update seeds on the same fit, averaged over
+  fit seeds; it is shown as `(upd ± …)`.
+- `recovery`'s clean reference is the `n_contam=0` run on the same frames (same seeds). The eval set
+  is the same across the `n_contam` grid, so no extra runs are needed. Sweep
+  `n_contam` with 0 included.
+- Fair comparison: within a dataset and scenario, models are compared only on the runs
+  they all have. The other runs are dropped with a warning; `--all-runs` keeps them.
+- The scenarios measure different things, so there is no single combined score.

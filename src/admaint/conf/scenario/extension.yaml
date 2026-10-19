@@ -1,0 +1,18 @@
+# Scenario 2: clean training; n_update frames of a defect type, with masks, are added to
+# the nominal state. The `extended` view scores that type as good.
+name: mvtec-extension
+kind: extension
+root: ${oc.env:MVTEC_ROOT}
+spec: mvtec
+categories: null
+target_defects: null
+shots: [8]
+n_update: [1, 2, 4]
+seeds: [0, 1, 2]        # fit seeds: draw the frames the module is fitted on
+update_seeds: [0]       # draw the update frames; runs differing only here share a fit
+min_eval: 3
+n_calibration: 20
+calibration_fpr: 0.05
+batch_size: 32
+num_workers: 4
+trainer: {}

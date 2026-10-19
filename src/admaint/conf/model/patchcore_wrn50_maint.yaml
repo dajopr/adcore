@@ -1,0 +1,18 @@
+# PatchCore on WideResNet-50 layers 2+3, the full memory bank, editable after fitting.
+name: patchcore-wrn50  # MLflow `arch`, and the output directory
+shared:
+  extractor:
+    _target_: adcore.TimmExtractor
+    model_name: wide_resnet50_2
+    out_indices: [2, 3]
+# Built fresh for every run; must be an adcore.AnomalyModule and admaint.Maintainable.
+module:
+  _target_: admaint.MaintainablePatchCore
+  sampling_ratio: 1.0
+  num_neighbors: 9
+  remove_k: 1         # bank entries removed per masked patch
+  mask_overlap: 0.0   # fraction of a patch that must be masked; 0 = any overlap
+image_size: [224, 224]
+transform: null
+train_transform: null
+trainer: {}

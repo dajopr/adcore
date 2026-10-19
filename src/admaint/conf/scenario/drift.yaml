@@ -1,0 +1,23 @@
+# Scenario 4: fitted on `shots` good frames; n_update further good frames under a domain
+# shift are added whole. Evaluated on the test split as it is (source) and shifted (target).
+name: mvtec-drift
+kind: drift
+root: ${oc.env:MVTEC_ROOT}
+spec: mvtec
+categories: null
+shots: [8]
+n_update: [1, 2, 4]
+# Named shifts, applied to full-resolution frames before resizing. Keep them
+# deterministic; give a changed shift a new name, since results are known by it.
+shifts:
+  dark: {_target_: torchvision.transforms.v2.ColorJitter, brightness: [0.5, 0.5]}
+  blur: {_target_: torchvision.transforms.v2.GaussianBlur, kernel_size: 31, sigma: [8.0, 8.0]}
+  rotate: {_target_: torchvision.transforms.v2.RandomRotation, degrees: [15, 15]}
+retire: false          # also remove the initial (source) frames in a second step
+seeds: [0, 1, 2]        # fit seeds: draw the frames the module is fitted on
+update_seeds: [0]       # draw the update frames; runs differing only here share a fit
+n_calibration: 20
+calibration_fpr: 0.05
+batch_size: 32
+num_workers: 4
+trainer: {}

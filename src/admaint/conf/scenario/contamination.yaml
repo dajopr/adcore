@@ -1,0 +1,19 @@
+# Scenario 1: n_contam frames of a defect type hide among the good training frames;
+# n_update other frames of it, with masks, are removed. n_contam=0 is the clean control.
+name: mvtec-contamination  # MLflow experiment, and the output directory
+kind: contamination
+root: ${oc.env:MVTEC_ROOT}
+spec: mvtec            # mvtec | visa | {_target_: adcore.DatasetSpec, ...}
+categories: null       # null = every category of the spec
+target_defects: null   # null = every defect type of each category
+shots: [8]             # good training frames; null in the list = all but calibration
+n_contam: [0, 1, 2]
+n_update: [1, 2]
+seeds: [0, 1, 2]        # fit seeds: draw the frames the module is fitted on
+update_seeds: [0]       # draw the update frames; runs differing only here share a fit
+min_eval: 3            # skip defect types with fewer frames left to evaluate
+n_calibration: 20      # good training frames held out to calibrate the threshold
+calibration_fpr: 0.05
+batch_size: 32
+num_workers: 4
+trainer: {}

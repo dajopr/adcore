@@ -1,0 +1,16 @@
+# Scenario 3: fitted on `shots` good frames, then good frames are added whole until there
+# are steps[i] after step i.
+name: mvtec-stepwise
+kind: stepwise
+root: ${oc.env:MVTEC_ROOT}
+spec: mvtec
+categories: null
+shots: [1]
+steps: [2, 4, 8, 16]   # cumulative good frames after each step
+seeds: [0, 1, 2]        # fit seeds: draw the frames the module is fitted on
+update_seeds: [0]       # draw the update frames; runs differing only here share a fit
+n_calibration: 20
+calibration_fpr: 0.05
+batch_size: 32
+num_workers: 4
+trainer: {}
