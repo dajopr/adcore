@@ -1,0 +1,13 @@
+name: mvtec-ad2-fewshot  # MLflow experiment, and the output directory
+root: ${oc.env:MVTEC_AD2_ROOT}
+spec: mvtec_ad2      # mvtec | visa | mvtec_ad2 | {_target_: adcore.DatasetSpec, ...}
+categories: null     # null = every category of the spec
+shots: [1, 2, 4, 8]  # null in the list = every training frame
+seeds: [0, 1, 2]
+anomalous_fraction: 0.0
+batch_size: 32
+num_workers: 4
+cache_test_set: true # at 672 on the short side a category's test_public is ~1-2 GB in memory
+trainer: {}          # Trainer kwargs for every model
+# The images are 1-8 MP and not square. Resize the short side, keeping the aspect ratio:
+#   model.transform='{_target_: adcore.default_transform, image_size: 672, multiple: 14}'

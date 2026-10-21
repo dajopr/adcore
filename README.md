@@ -318,10 +318,11 @@ on top of `track`. `adcore-run` builds a `FewShotExperiment` from three config g
 - `launcher`: `single`, or `gpus` for one worker per GPU.
 
 ```bash
-export MVTEC_ROOT=/data/shared-data/public_datasets/raw/MVTec   # VISA_ROOT for visa_fewshot
+export MVTEC_ROOT=/data/shared-data/public_datasets/raw/MVTec   # VISA_ROOT for visa_fewshot, MVTEC_AD2_ROOT for mvtec_ad2_fewshot
 export MLFLOW_TRACKING_URI=http://mlflow-host:5000              # optional
 adcore-run model=patchcore_wrn50 experiment=mvtec_fewshot
 adcore-run model=patchcore_wrn50 experiment=visa_fewshot launcher=gpus launcher.devices=[0,1,2,3]
+adcore-run model=patchcore_wrn50 experiment=mvtec_ad2_fewshot 'model.transform={_target_: adcore.default_transform, image_size: 672, multiple: 14}'
 adcore-run model=patchcore_wrn50 experiment.categories=[bottle] experiment.shots=[1] model.module.num_neighbors=1
 adcore-run -m model=patchcore_wrn50,my_model experiment=mvtec_fewshot   # one model after the other
 adcore-run --cfg job                                                    # print the composed config

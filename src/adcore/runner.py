@@ -45,11 +45,11 @@ from tqdm.auto import tqdm
 
 from adcore.experiment import FewShotExperiment, Run
 from adcore.module import AnomalyModule
-from adcore.mvtec import MVTEC, VISA, DatasetSpec
+from adcore.mvtec import MVTEC, MVTEC_AD2, VISA, DatasetSpec
 
 log = logging.getLogger(__name__)
 
-_SPECS = {spec.name: spec for spec in (MVTEC, VISA)}
+_SPECS = {spec.name: spec for spec in (MVTEC, VISA, MVTEC_AD2)}
 # Experiment keys that may change between sessions of one output directory: the grid
 # grows, and loader settings don't change results.
 _UNHASHED = ("name", "categories", "shots", "seeds", "batch_size", "num_workers", "cache_test_set")

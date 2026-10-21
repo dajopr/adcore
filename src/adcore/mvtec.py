@@ -1,4 +1,4 @@
-"""MVTec AD (and datasets laid out like it, such as VisA 1cls) as a plain
+"""MVTec AD (and datasets laid out like it, such as VisA 1cls and MVTec AD 2) as a plain
 ``torch.utils.data.Dataset`` yielding dicts, so a bare ``DataLoader`` works."""
 
 import zlib
@@ -11,6 +11,8 @@ from PIL import Image
 from torch.utils.data import Dataset, Subset
 from torchvision import tv_tensors
 from torchvision.transforms import v2 as T
+from torchvision.transforms.v2 import functional as F
+from torchvision.transforms.v2._utils import query_size
 
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
@@ -48,47 +50,122 @@ VISA_CATEGORIES = (
     "pipe_fryum",
 )
 
+MVTEC_AD2_CATEGORIES = (
+    "can",
+    "fabric",
+    "fruit_jelly",
+    "rice",
+    "sheet_metal",
+    "vial",
+    "wallplugs",
+    "walnuts",
+)
+
 
 @dataclass(frozen=True)
 class DatasetSpec:
     """Where a dataset in the MVTec layout keeps its images and masks.
 
-    Every such dataset has ``<category>/{train,test}/<defect_type>/<image>`` and, for each
-    anomalous test image, a mask at ``<category>/ground_truth/<defect_type>/<mask_name>``.
+    Every such dataset has ``<category>/{train,<test_dir>}/<defect_type>/<image>`` and, for
+    each anomalous test image, a mask at ``<category>/<mask_dir>/<defect_type>/<mask_name>``.
 
     Args:
         name: Recorded in experiment configs.
         image_glob: Matches the images inside a defect-type directory.
         mask_name: Mask filename, formatted with the image's ``stem``.
         categories: Every category, in the dataset's canonical order.
+        test_dir: Directory of the ``"test"`` split, relative to the category.
+        mask_dir: Directory of the masks, relative to the category. When it lies inside a
+            split's directory it is not read as a defect type.
     """
 
     name: str
     image_glob: str
     mask_name: str
     categories: tuple[str, ...]
+    test_dir: str = "test"
+    mask_dir: str = "ground_truth"
 
 
 # /data/shared-data/public_datasets/raw/MVTec on this machine.
 MVTEC = DatasetSpec("mvtec", "*.png", "{stem}_mask.png", CATEGORIES)
 # VisA in its 1cls layout: /data/shared-data/public_datasets/raw/visa/visa_pytorch.
 VISA = DatasetSpec("visa", "*.JPG", "{stem}.png", VISA_CATEGORIES)
+# MVTec AD 2 as downloaded, tested on test_public (the private test sets have no masks):
+# /data/shared-data/public_datasets/raw/mvtec_ad_2. Its images are 1-8 MP and their aspect
+# ratio differs per category, so pair it with `ResizeShortSide` rather than a square resize.
+MVTEC_AD2 = DatasetSpec(
+    "mvtec_ad2",
+    "*.png",
+    "{stem}_mask.png",
+    MVTEC_AD2_CATEGORIES,
+    test_dir="test_public",
+    mask_dir="test_public/ground_truth",
+)
+
+
+class ResizeShortSide(T.Transform):
+    """Resize so the short side is ``size``, keeping the aspect ratio, with both sides
+    rounded to the nearest multiple of ``multiple`` (e.g. a ViT's patch size).
+
+    The output size is computed from each input, so images of different shapes come out
+    at different sizes; a batch must hold images of one shape (as one MVTec AD 2 category
+    does). Masks are resized with nearest, whatever ``interpolation`` says.
+    """
+
+    def __init__(
+        self,
+        size: int,
+        multiple: int = 1,
+        interpolation: T.InterpolationMode = T.InterpolationMode.BILINEAR,
+        antialias: bool = True,
+    ) -> None:
+        super().__init__()
+        self.size = size
+        self.multiple = multiple
+        self.interpolation = interpolation
+        self.antialias = antialias
+
+    def _round(self, length: float) -> int:
+        return max(self.multiple, round(length / self.multiple) * self.multiple)
+
+    def make_params(self, flat_inputs: list) -> dict:
+        height, width = query_size(flat_inputs)
+        scale = self.size / min(height, width)
+        return {"size": [self._round(height * scale), self._round(width * scale)]}
+
+    def transform(self, inpt, params: dict):
+        return self._call_kernel(
+            F.resize,
+            inpt,
+            params["size"],
+            interpolation=self.interpolation,
+            antialias=self.antialias,
+        )
 
 
 def default_transform(
-    image_size: tuple[int, int] = (224, 224),
+    image_size: tuple[int, int] | int = (224, 224),
     interpolation: T.InterpolationMode = T.InterpolationMode.BILINEAR,
+    multiple: int = 1,
 ) -> T.Compose:
     """Resize + ImageNet normalisation.
+
+    A pair ``image_size`` resizes to exactly that ``(height, width)``; an int resizes the
+    short side to it with `ResizeShortSide`, rounding both sides to multiples of ``multiple``.
 
     Applied to image and mask together: ``Resize`` uses nearest on a ``Mask`` whatever
     ``interpolation`` says, and ``ConvertImageDtype``/``Normalize`` leave its 0/1 values
     untouched. Bicubic (SubspaceAD's choice) with antialiasing on a uint8 tensor is close
     to PIL's bicubic downscale but not identical.
     """
+    if isinstance(image_size, int):
+        resize = ResizeShortSide(image_size, multiple, interpolation)
+    else:
+        resize = T.Resize(tuple(image_size), interpolation=interpolation)
     return T.Compose(
         [
-            T.Resize(image_size, interpolation=interpolation),
+            resize,
             T.ConvertImageDtype(torch.float32),
             T.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
         ]
@@ -101,17 +178,17 @@ def find_records(
     """Every frame of ``split``, sorted by (category, defect_type, filename)."""
     records = []
     for category in categories:
-        for defect_dir in sorted((root / category / split).iterdir()):
+        split_dir = root / category / (spec.test_dir if split == "test" else split)
+        mask_dir = root / category / spec.mask_dir
+        for defect_dir in sorted(split_dir.iterdir()):
+            if not defect_dir.is_dir() or defect_dir == mask_dir:
+                continue
             defect_type = defect_dir.name
             for image_path in sorted(defect_dir.glob(spec.image_glob)):
                 mask_path = ""
                 if defect_type != "good":
                     mask_path = str(
-                        root
-                        / category
-                        / "ground_truth"
-                        / defect_type
-                        / spec.mask_name.format(stem=image_path.stem)
+                        mask_dir / defect_type / spec.mask_name.format(stem=image_path.stem)
                     )
                 records.append(
                     {
@@ -137,7 +214,7 @@ class MVTecDataset(Dataset):
         split: ``"train"`` or ``"test"``.
         transform: A torchvision v2 transform taking ``(image, mask)``.
         image_size: Only used to build the default transform.
-        spec: The dataset's layout, e.g. `MVTEC` or `VISA`.
+        spec: The dataset's layout, e.g. `MVTEC`, `VISA` or `MVTEC_AD2`.
     """
 
     def __init__(

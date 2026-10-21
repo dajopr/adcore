@@ -1,4 +1,4 @@
-"""Core anomaly detection on Lightning: PatchCore, MVTec AD / VisA loading, metrics, evaluation,
+"""Core anomaly detection on Lightning: PatchCore, MVTec AD / VisA / MVTec AD 2 loading, metrics, evaluation,
 few-shot experiments and their tracking in MLflow."""
 
 from adcore.datamodule import (
@@ -17,10 +17,13 @@ from adcore.module import AnomalyModule
 from adcore.mvtec import (
     CATEGORIES,
     MVTEC,
+    MVTEC_AD2,
+    MVTEC_AD2_CATEGORIES,
     VISA,
     VISA_CATEGORIES,
     DatasetSpec,
     MVTecDataset,
+    ResizeShortSide,
     default_transform,
     few_shot_subset,
     split_by_defect_type,
@@ -41,11 +44,14 @@ __all__ = [
     "FewShotExperiment",
     "MLflowTracking",
     "MVTEC",
+    "MVTEC_AD2",
+    "MVTEC_AD2_CATEGORIES",
     "MVTecDataModule",
     "MVTecDataset",
     "OutputMean",
     "PatchCore",
     "PatchcoreModel",
+    "ResizeShortSide",
     "Predictions",
     "Run",
     "TimmExtractor",
