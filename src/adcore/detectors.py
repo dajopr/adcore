@@ -55,6 +55,8 @@ class PatchCore(AnomalyModule):
         blur_sigma: Gaussian smoothing of the upsampled anomaly map; 0 disables it.
         blur_kernel_size: Odd kernel size for that smoothing; None is the full kernel.
             3 matches SubspaceAD.
+        max_chunk_numel: Distance-matrix entries per nearest-neighbour query chunk;
+            see `PatchcoreModel`.
         **kwargs: Passed to `AnomalyModule`.
     """
 
@@ -65,11 +67,14 @@ class PatchCore(AnomalyModule):
         num_neighbors: int = 9,
         blur_sigma: float = 4.0,
         blur_kernel_size: int | None = None,
+        max_chunk_numel: int = 2**28,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.extractor = extractor
-        self.model = PatchcoreModel(num_neighbors=num_neighbors)
+        self.model = PatchcoreModel(
+            num_neighbors=num_neighbors, max_chunk_numel=max_chunk_numel
+        )
         self.sampling_ratio = sampling_ratio
         self.blur_sigma = blur_sigma
         self.blur_kernel_size = blur_kernel_size

@@ -38,10 +38,20 @@ def euclidean_dist(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
 
 
 class PatchcoreModel(nn.Module):
-    def __init__(self, num_neighbors: int = 9):
+    """
+    Args:
+        num_neighbors: Neighbours used to reweight the image score; 1 is the raw max.
+        max_chunk_numel: Distance-matrix entries computed at once in the nearest
+            neighbour search. Queries are split into row chunks of at most this many
+            entries, so memory stays bounded however large the bank is; ``2**28`` is
+            1 GiB of fp32 distances (plus temporaries of the same size).
+    """
+
+    def __init__(self, num_neighbors: int = 9, max_chunk_numel: int = 2**28):
         super().__init__()
 
         self.num_neighbors = num_neighbors
+        self.max_chunk_numel = max_chunk_numel
 
         self.memory_bank = torch.nn.Parameter(
             data=torch.Tensor([]), requires_grad=False
@@ -174,12 +184,18 @@ class PatchcoreModel(nn.Module):
             Tensor: Patch scores.
             Tensor: Locations of the nearest neighbor(s).
         """
-        distances = euclidean_dist(embedding, self.memory_bank)
-        if n_neighbors == 1:
-            # when n_neighbors is 1, speed up computation by using min instead of topk
-            patch_scores, locations = distances.min(1)
-        else:
-            patch_scores, locations = distances.topk(
-                k=n_neighbors, largest=False, dim=1
-            )
-        return patch_scores, locations
+        # The full (n, m) distance matrix can exceed GPU memory with a large bank (e.g.
+        # tens of GB at 4 shots x 30 rotations without a coreset), so query in chunks
+        chunk_size = max(1, self.max_chunk_numel // max(1, self.memory_bank.shape[0]))
+        patch_scores, locations = [], []
+        for chunk in embedding.split(chunk_size):
+            distances = euclidean_dist(chunk, self.memory_bank)
+            if n_neighbors == 1:
+                # when n_neighbors is 1, speed up computation by using min instead of topk
+                scores, indices = distances.min(1)
+            else:
+                scores, indices = distances.topk(k=n_neighbors, largest=False, dim=1)
+            patch_scores.append(scores)
+            locations.append(indices)
+            del distances
+        return torch.cat(patch_scores), torch.cat(locations)
