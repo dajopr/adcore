@@ -255,6 +255,7 @@ summarize(results)               # mean/std per metric, plus the category mean
 - Trainer defaults: one device, `max_epochs=1`, no checkpointing, no progress bar. Override them with `trainer_kwargs`.
 - The seed also picks the shots. For a given seed the draws are nested: the 2-shot set contains the 1-shot set.
 - `anomalous_fraction` is passed through to the datamodule, for supervised or prompt-guided modules.
+- `support_aug` (an `AugmentSpec`) adds seeded augmented views of every defect-free training frame, at every shot count including `None`. On full-shot runs that multiplies the whole training set by `n_views + 1`.
 - `output_dir` gets:
   - `config.json`
   - `results.jsonl`, appended after every run

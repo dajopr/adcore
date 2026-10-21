@@ -6,8 +6,8 @@
   tell them apart.
 - ``reference_dataloader``: the defect-free training frames only, unshuffled — what a
   trained module builds a memory bank from after its gradient epochs. With
-  ``support_aug`` each few-shot frame also comes as seeded augmented views (see
-  `AugmentedSupport`), in both this loader and ``train_dataloader``.
+  ``support_aug`` each of these frames (few-shot or all of them) also comes as seeded
+  augmented views (see `AugmentedSupport`), in both this loader and ``train_dataloader``.
 - ``test_dataloader``: the (remaining) test split.
 """
 
@@ -163,8 +163,9 @@ class MVTecDataModule(L.LightningDataModule):
         train_transform: Replaces ``transform`` for the defect-free training frames
             (the anomalous training frames come from the test split and keep ``transform``).
         spec: The dataset's layout, e.g. `adcore.mvtec.MVTEC` or `adcore.mvtec.VISA`.
-        support_aug: Expand each few-shot frame into augmented views, see
-            `AugmentedSupport`. Ignored when ``shots`` is None. None: no augmentation.
+        support_aug: Expand each defect-free training frame into augmented views, see
+            `AugmentedSupport`. Applies when ``shots`` is None too, multiplying the whole
+            training set. None: no augmentation.
         test_dataset: A prebuilt test split (e.g. a `CachedDataset`) to use instead of
             reading one; experiments pass the same cached split to every run.
         batch_size, num_workers: DataLoader settings. A `CachedDataset` is read with
@@ -214,7 +215,7 @@ class MVTecDataModule(L.LightningDataModule):
             self.root, self.category, "test", self.transform, spec=self.spec
         )
         self.reference = few_shot_subset(train, self.shots, self.seed)
-        if self.support_aug is not None and self.shots is not None:
+        if self.support_aug is not None:
             aug = self.support_aug
             self.reference = AugmentedSupport(
                 self.reference,

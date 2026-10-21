@@ -122,8 +122,8 @@ class FewShotExperiment:
         train_transform: Replaces ``transform`` for the defect-free training frames; the
             test split keeps ``transform``.
         spec: The dataset's layout, e.g. `adcore.mvtec.MVTEC` or `adcore.mvtec.VISA`.
-        support_aug: Augmented views of each few-shot frame; see
-            `adcore.datamodule.AugmentedSupport`. Full-shot runs ignore it.
+        support_aug: Augmented views of each defect-free training frame; see
+            `adcore.datamodule.AugmentedSupport`. Full-shot runs are augmented too.
         cache_test_set: Decode each category's test split once and reuse it for every run.
         tracking: Also record every run in MLflow (`adcore.tracking.MLflowTracking`); its
             sweep name defaults to the name of ``output_dir``.
