@@ -51,7 +51,7 @@ def default_tracking_uri() -> str:
 
 # Columns that identify a run, and those shared by all of a run's rows.
 _KEY = ("category", "shots", "seed")
-_RUN_FIELDS = ("n_train", "n_anomalous_train", "pro_connectivity", "fit_seconds", "test_seconds")
+_RUN_FIELDS = ("n_train", "n_anomalous_train", "pro_connectivity", "fpr_limit", "fit_seconds", "test_seconds")
 # Per (category, defect_type) columns of `adcore.evaluation.score`, plus a module's
 # ``stat/...`` columns; anything else on a run (e.g. a module's training losses via
 # Lightning, or its ``test/stat/...`` curve) is not part of its results rows.

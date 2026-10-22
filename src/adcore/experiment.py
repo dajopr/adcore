@@ -50,6 +50,7 @@ from tqdm.auto import tqdm
 
 from adcore.datamodule import AugmentSpec, CachedDataset, MVTecDataModule
 from adcore.evaluation import METRICS, STAT, check_artifact_name, decode_artifact
+from adcore.metrics import DEFAULT_FPR_LIMIT
 from adcore.module import AnomalyModule
 from adcore.mvtec import MVTEC, DatasetSpec, MVTecDataset, default_transform
 
@@ -385,6 +386,7 @@ class FewShotExperiment:
         result = module.test_result
         stats = {f"{STAT}{name}": value for name, value in result.stats.items()}
         pro_connectivity = module.pro_connectivity
+        fpr_limit = module.fpr_limit
         del module, trainer
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -395,8 +397,10 @@ class FewShotExperiment:
                 "n_train": len(datamodule.train),
                 "n_anomalous_train": len(datamodule.train) - len(datamodule.reference),
                 **row,
-                # Recorded per row: `aupro` means different things at 4 and 8.
+                # Recorded per row: `aupro` means different things at 4 and 8, and at
+                # each FPR limit.
                 "pro_connectivity": pro_connectivity,
+                "fpr_limit": fpr_limit,
                 "fit_seconds": fit_seconds,
                 "test_seconds": test_seconds,
                 # The module's stats cover the whole test split, so only its "all" row.
@@ -514,6 +518,9 @@ def results_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
     if "pro_connectivity" in frame:
         # Rows from before the option existed were 4-connected.
         frame["pro_connectivity"] = frame["pro_connectivity"].fillna(4).astype(int)
+    if "fpr_limit" in frame:
+        # Rows from before the limit was recorded used the default.
+        frame["fpr_limit"] = frame["fpr_limit"].fillna(DEFAULT_FPR_LIMIT).astype(float)
     return frame
 
 

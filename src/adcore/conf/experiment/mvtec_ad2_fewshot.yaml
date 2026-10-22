@@ -9,5 +9,6 @@ batch_size: 32
 num_workers: 4
 cache_test_set: true # at 672 on the short side a category's test_public is ~1-2 GB in memory
 trainer: {}          # Trainer kwargs for every model
+fpr_limit: 0.05      # AUPRO's FPR limit, as MVTec AD 2 reports it; unset = the module's (0.3)
 # The images are 1-8 MP and not square. Resize the short side, keeping the aspect ratio:
 #   model.transform='{_target_: adcore.default_transform, image_size: 672, multiple: 14}'

@@ -103,10 +103,12 @@ class ModuleFactory:
 
     ``model.shared`` is built on the first call and passed by name to every module, so
     a backbone loads once per process. ``model.module`` is built fresh for each run.
+    ``fpr_limit``, when given, replaces every module's AUPRO FPR limit.
     """
 
-    def __init__(self, model: DictConfig) -> None:
+    def __init__(self, model: DictConfig, *, fpr_limit: float | None = None) -> None:
         self.module = model.module
+        self.fpr_limit = fpr_limit
         self.shared = model.get("shared") or {}
         self._objects: dict[str, Any] | None = None
         target = get_object(self.module._target_)
@@ -128,6 +130,9 @@ class ModuleFactory:
         module = instantiate(self.module, _convert_="all", _partial_=True)(**kwargs)
         if not isinstance(module, AnomalyModule):
             raise TypeError(f"model.module built a {type(module).__name__}, not an AnomalyModule")
+        if self.fpr_limit is not None:
+            # Set rather than passed: a subclass need not take `fpr_limit` itself.
+            module.fpr_limit = self.fpr_limit
         return module
 
 
@@ -200,7 +205,7 @@ def build_experiment(
     categories = experiment.get("categories")
     return FewShotExperiment(
         experiment.root,
-        module_factory=ModuleFactory(model),
+        module_factory=ModuleFactory(model, fpr_limit=experiment.get("fpr_limit")),
         categories=list(categories) if categories is not None else None,
         shots=list(experiment.shots),
         seeds=list(experiment.seeds),

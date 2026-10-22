@@ -42,8 +42,9 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 DEFAULT_N_BINS: int = 16384
 
 # Bergmann et al.'s convention, and the limit every published MVTec AUPRO is quoted at.
-# Deliberately not a config key: sweeping it would make one `aupro` column mean two
-# things across a set of runs that otherwise look comparable.
+# MVTec AD 2 quotes AUPRO at 0.05 instead, which its experiment config sets
+# (`experiment.fpr_limit`). Experiment rows record the limit, since one `aupro` column
+# means different things at each.
 DEFAULT_FPR_LIMIT: float = 0.3
 
 # 4-connected, matching MVTec AD's official `pro_curve_util.py`, so `aupro` is comparable
