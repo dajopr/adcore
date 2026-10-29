@@ -107,6 +107,9 @@ class MLflowTracking:
     @property
     def client(self) -> MlflowClient:
         if self._client is None:
+            # Ending a run on a tracking server prints its URLs, twice per run with
+            # Lightning's MLFlowLogger; set the variable to false to get them back.
+            os.environ.setdefault("MLFLOW_SUPPRESS_PRINTING_URL_TO_STDOUT", "true")
             from mlflow import MlflowClient
 
             self._client = MlflowClient(self.tracking_uri)

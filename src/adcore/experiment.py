@@ -78,21 +78,32 @@ _QUIET = (
     r".*configure_optimizers.*returned.*None.*",
     r".*does not have many workers.*",
     r".*smaller than the logging interval.*",
+    r".*defined a `validation_step` but have no `val_dataloader`.*",
+    r".*Consider setting `persistent_workers=True`.*",
+    r".*module\(s\) in eval mode at the start of training.*",  # the frozen backbone
+    r".*isinstance\(treespec, LeafSpec\)` is deprecated.*",
+)
+# Loggers whose INFO lines repeat once per run.
+_QUIET_LOGGERS = (
+    "lightning.pytorch.utilities.rank_zero",
+    "lightning.pytorch.accelerators.cuda",
 )
 
 
 @contextmanager
 def _quiet_lightning():
-    rank_zero = logging.getLogger("lightning.pytorch.utilities.rank_zero")
-    level = rank_zero.level
-    rank_zero.setLevel(logging.WARNING)
+    loggers = [logging.getLogger(name) for name in _QUIET_LOGGERS]
+    levels = [logger.level for logger in loggers]
+    for logger in loggers:
+        logger.setLevel(logging.WARNING)
     with warnings.catch_warnings():
         for message in _QUIET:
             warnings.filterwarnings("ignore", message=message)
         try:
             yield
         finally:
-            rank_zero.setLevel(level)
+            for logger, level in zip(loggers, levels):
+                logger.setLevel(level)
 
 
 class FewShotExperiment:
