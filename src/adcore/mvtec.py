@@ -61,6 +61,39 @@ MVTEC_AD2_CATEGORIES = (
     "walnuts",
 )
 
+REALIAD_CATEGORIES = (
+    "audiojack",
+    "bottle_cap",
+    "button_battery",
+    "end_cap",
+    "eraser",
+    "fire_hood",
+    "mint",
+    "mounts",
+    "pcb",
+    "phone_battery",
+    "plastic_nut",
+    "plastic_plug",
+    "porcelain_doll",
+    "regulator",
+    "rolled_strip_base",
+    "sim_card_set",
+    "switch",
+    "tape",
+    "terminalblock",
+    "toothbrush",
+    "toy",
+    "toy_brick",
+    "transistor1",
+    "u_block",
+    "usb",
+    "usb_adaptor",
+    "vcpill",
+    "wooden_beads",
+    "woodstick",
+    "zipper",
+)
+
 
 @dataclass(frozen=True)
 class DatasetSpec:
@@ -102,6 +135,9 @@ MVTEC_AD2 = DatasetSpec(
     test_dir="test_public",
     mask_dir="test_public/ground_truth",
 )
+# Real-IAD single-view, converted by `adcore.convert_realiad`:
+# /data/shared-data/public_datasets/raw/realiad_1024/realiad_sv. Its images are 1024x1024.
+REALIAD = DatasetSpec("realiad", "*.jpg", "{stem}.png", REALIAD_CATEGORIES)
 
 
 class ResizeShortSide(T.Transform):

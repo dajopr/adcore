@@ -1,6 +1,6 @@
 name: mvtec-ad2-fewshot  # MLflow experiment, and the output directory
 root: ${oc.env:MVTEC_AD2_ROOT}
-spec: mvtec_ad2      # mvtec | visa | mvtec_ad2 | {_target_: adcore.DatasetSpec, ...}
+spec: mvtec_ad2      # mvtec | visa | mvtec_ad2 | realiad | {_target_: adcore.DatasetSpec, ...}
 categories: null     # null = every category of the spec
 shots: [1, 2, 4, 8]  # null in the list = every training frame
 seeds: [0, 1, 2]

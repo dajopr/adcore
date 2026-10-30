@@ -13,7 +13,9 @@ can come from any package: the only requirement is that it is an `AnomalyModule`
 
 With several GPU slots, each slot is a spawned worker process that sees only its GPU and
 takes whole categories off a queue, so a category's test split is still decoded once.
-Workers send their outcomes back and this process alone writes ``results.jsonl``, so
+In a multirun (``-m``) the jobs are queued as Hydra launches them and run together once
+the last is queued (`PooledMultirun`), so a GPU that finishes one variant moves on to the
+next instead of waiting for the slowest GPU. Workers send their outcomes back and this process alone writes ``results.jsonl``, so
 resuming works as with `FewShotExperiment.run`. Each combination of ``model.*`` overrides is a *variant*
 with its own output directory and MLflow sweep, tagged ``variant``. Workers log to MLflow themselves
 (including training curves) only when the store is a server; with SQLite this process
@@ -25,6 +27,7 @@ Needs the ``run`` extra (``hydra-core``).
 from __future__ import annotations
 
 import argparse
+import gc
 import hashlib
 import inspect
 import json
@@ -38,6 +41,7 @@ from collections.abc import Sequence
 from typing import Any
 
 import pandas as pd
+from hydra.experimental.callback import Callback
 from hydra.utils import get_object, instantiate
 from lightning.pytorch.utilities.seed import isolate_rng
 from omegaconf import DictConfig, OmegaConf
@@ -45,11 +49,11 @@ from tqdm.auto import tqdm
 
 from adcore.experiment import FewShotExperiment, Run
 from adcore.module import AnomalyModule
-from adcore.mvtec import MVTEC, MVTEC_AD2, VISA, DatasetSpec
+from adcore.mvtec import MVTEC, MVTEC_AD2, REALIAD, VISA, DatasetSpec
 
 log = logging.getLogger(__name__)
 
-_SPECS = {spec.name: spec for spec in (MVTEC, VISA, MVTEC_AD2)}
+_SPECS = {spec.name: spec for spec in (MVTEC, VISA, MVTEC_AD2, REALIAD)}
 # Experiment keys that may change between sessions of one output directory: the grid
 # grows, and loader settings don't change results.
 _UNHASHED = ("name", "categories", "shots", "seeds", "batch_size", "num_workers", "cache_test_set")
@@ -258,14 +262,14 @@ def _slots(launcher: DictConfig | None) -> list[int]:
     return [d for d in devices for _ in range(launcher.workers_per_device)]
 
 
-def _units(
-    categories: Sequence[str], todo: Sequence[Run], n_workers: int
-) -> list[tuple[str, list[Run]]]:
-    """Work for the queue: whole categories, or (category, shots) when categories are too few."""
+def _units(categories: Sequence[str], todo: Sequence[Run]) -> list[tuple[str, list[Run]]]:
+    """Work for the queue: the runs of each category."""
     units = [(c, [run for run in todo if run.category == c]) for c in categories]
-    units = [unit for unit in units if unit[1]]
-    if len(units) >= n_workers:
-        return units
+    return [unit for unit in units if unit[1]]
+
+
+def _by_shots(units: Sequence[tuple[str, list[Run]]]) -> list[tuple[str, list[Run]]]:
+    """Units split into (category, shots), for when categories are too few for the workers."""
     return [
         (category, [run for run in runs if run.shots == shots])
         for category, runs in units
@@ -277,43 +281,75 @@ def _concurrent_store(uri: str) -> bool:
     return uri.split(":", 1)[0].split("+", 1)[0] in _CONCURRENT_SCHEMES
 
 
-def _worker(container: dict, device: int, sweep_id: str | None, work, results) -> None:
+def _worker(
+    containers: list[dict], sweep_ids: list[str | None], device: int, work, results
+) -> None:
     # Only this GPU, set before anything touches CUDA; `device` indexes the visible ones.
     visible = os.environ.get("CUDA_VISIBLE_DEVICES")
     os.environ["CUDA_VISIBLE_DEVICES"] = visible.split(",")[device] if visible else str(device)
-    cfg = OmegaConf.create(container)
-    experiment = build_experiment(cfg, tracking=sweep_id is not None)
-    if sweep_id is not None:
-        experiment.use_sweep(sweep_id)
+    import torch
+
+    current, experiment = None, None
     while (unit := work.get()) is not None:
-        category, runs = unit
+        job, category, runs = unit
         try:
+            if job != current:
+                # One job's experiment at a time, so one variant's shared objects on the GPU.
+                current, experiment = None, None
+                gc.collect()
+                torch.cuda.empty_cache()
+                experiment = build_experiment(
+                    OmegaConf.create(containers[job]), tracking=sweep_ids[job] is not None
+                )
+                if sweep_ids[job] is not None:
+                    experiment.use_sweep(sweep_ids[job])
+                current = job
             for outcome in experiment.run_category(category, runs):
-                results.put(("outcome", outcome))
+                results.put(("outcome", job, outcome))
         except Exception:
-            results.put(("failed", (category, traceback.format_exc())))
+            results.put(("failed", job, (category, traceback.format_exc())))
         else:
-            results.put(("done", category))
+            results.put(("done", job, category))
 
 
 def _run_parallel(
-    container: dict, experiment: FewShotExperiment, slots: list[int], progress: bool
+    jobs: Sequence[tuple[dict, FewShotExperiment]], slots: list[int], progress: bool
 ) -> pd.DataFrame:
-    experiment.write_config()
-    todo = experiment.todo()
-    if not todo:
-        return experiment.results()
-    units = _units(experiment.categories, todo, len(slots))
-    tracking = experiment.tracking
-    sweep_id = experiment.start_sweep() if tracking is not None else None
-    workers_track = tracking is not None and _concurrent_store(tracking.tracking_uri)
-    if tracking is not None and not workers_track:
-        log.warning(
-            "%s is not safe for several writers: recording final metrics from the main "
-            "process, without training curves. Set MLFLOW_TRACKING_URI to a tracking "
-            "server to get them.",
-            tracking.tracking_uri,
-        )
+    """Run every job's missing runs on one pool of workers; returns the last job's results."""
+    containers = [container for container, _ in jobs]
+    experiments = [experiment for _, experiment in jobs]
+    todos, seen = [], set()
+    for experiment in experiments:
+        experiment.write_config()
+        # Jobs that differ only outside model.* share an output directory, and maybe runs.
+        where = experiment.output_dir or id(experiment)
+        todo = [run for run in experiment.todo() if (where, run.key) not in seen]
+        seen.update((where, run.key) for run in todo)
+        todos.append(todo)
+    per_job = [_units(e.categories, todo) for e, todo in zip(experiments, todos)]
+    if sum(map(len, per_job)) < len(slots):
+        per_job = [_by_shots(units) for units in per_job]
+    units = [(job, *unit) for job, job_units in enumerate(per_job) for unit in job_units]
+    if not units:
+        return experiments[-1].results()
+
+    sweep_ids = [
+        e.start_sweep() if e.tracking is not None and todo else None
+        for e, todo in zip(experiments, todos)
+    ]
+    workers_track = [
+        e.tracking is not None and _concurrent_store(e.tracking.tracking_uri)
+        for e in experiments
+    ]
+    for e, sweep_id, tracked in zip(experiments, sweep_ids, workers_track):
+        if sweep_id is not None and not tracked:
+            log.warning(
+                "%s is not safe for several writers: recording final metrics from the main "
+                "process, without training curves. Set MLFLOW_TRACKING_URI to a tracking "
+                "server to get them.",
+                e.tracking.tracking_uri,
+            )
+            break
 
     context = mp.get_context("spawn")
     work, results = context.Queue(), context.Queue()
@@ -321,43 +357,47 @@ def _run_parallel(
         work.put(unit)
     for _ in slots:
         work.put(None)
+    worker_sweeps = [s if tracked else None for s, tracked in zip(sweep_ids, workers_track)]
     workers = [
         context.Process(
             target=_worker,
-            args=(container, device, sweep_id if workers_track else None, work, results),
+            args=(containers, worker_sweeps, device, work, results),
             name=f"adcore-worker{i}-gpu{device}",
         )
         for i, device in enumerate(slots)
     ]
+    n_runs = sum(map(len, todos))
     log.info(
-        "%d runs in %d units on %d workers (GPUs %s)",
-        len(todo), len(units), len(slots), ",".join(map(str, slots)),
+        "%d runs in %d units from %d jobs on %d workers (GPUs %s)",
+        n_runs, len(units), sum(1 for todo in todos if todo), len(slots),
+        ",".join(map(str, slots)),
     )
 
-    failures: list[tuple[str, str]] = []
+    failures: list[tuple[Any, str, str]] = []
     remaining = len(units)
-    bar = tqdm(total=len(todo), desc="Runs", disable=not progress)
+    bar = tqdm(total=n_runs, desc="Runs", disable=not progress)
     try:
         for worker in workers:
             worker.start()
         while remaining:
             try:
-                kind, payload = results.get(timeout=10)
+                kind, job, payload = results.get(timeout=10)
             except queue.Empty:
                 if not any(worker.is_alive() for worker in workers):
                     break
                 continue
+            experiment = experiments[job]
             if kind == "outcome":
                 experiment.record(payload)
-                if tracking is not None and not workers_track:
+                if experiment.tracking is not None and not workers_track[job]:
                     experiment.track(payload)
                 bar.update()
                 bar.set_postfix_str(payload["run"].name)
             else:
                 remaining -= 1
                 if kind == "failed":
-                    failures.append(payload)
-                    log.error("category %s failed:\n%s", *payload)
+                    failures.append((experiment.output_dir, *payload))
+                    log.error("%s: category %s failed:\n%s", *failures[-1])
         for worker in workers:
             worker.join()
     finally:
@@ -366,19 +406,50 @@ def _run_parallel(
             if worker.is_alive():
                 worker.terminate()
                 worker.join()
-        if tracking is not None:
-            tracking.end_sweep(sweep_id)
+        for e, sweep_id in zip(experiments, sweep_ids):
+            if sweep_id is not None:
+                e.tracking.end_sweep(sweep_id)
 
     if failures or remaining:
+        failed = ", ".join(f"{d}:{c}" if len(jobs) > 1 else c for d, c, _ in failures)
         raise RuntimeError(
-            f"{len(failures)} work units failed ({', '.join(c for c, _ in failures)}) and "
+            f"{len(failures)} work units failed ({failed}) and "
             f"{remaining} were lost to dead workers; rerun to resume the missing runs"
         )
-    return experiment.results()
+    return experiments[-1].results()
 
 
-def run(cfg: DictConfig) -> pd.DataFrame:
-    """Run the experiment ``cfg`` describes; call it from your own ``@hydra.main`` if you like."""
+# Multi-GPU jobs of the running multirun, waiting for one shared pool; None when no
+# `PooledMultirun` is watching this process.
+_pending: list[tuple[dict, FewShotExperiment, list[int], bool]] | None = None
+
+
+class PooledMultirun(Callback):
+    """Hydra callback: runs a multirun's multi-GPU jobs on one worker pool.
+
+    Each job queues itself in `run`; the pool starts once the last job is queued. Jobs
+    launched in other processes (e.g. by the joblib launcher) never see the queue and
+    run on their own.
+    """
+
+    def on_multirun_start(self, config: DictConfig, **kwargs: Any) -> None:
+        global _pending
+        _pending = []
+
+    def on_multirun_end(self, config: DictConfig, **kwargs: Any) -> None:
+        global _pending
+        jobs, _pending = _pending or [], None
+        if jobs:
+            _, _, slots, progress = jobs[0]
+            _run_parallel([(c, e) for c, e, _, _ in jobs], slots, progress)
+
+
+def run(cfg: DictConfig) -> pd.DataFrame | None:
+    """Run the experiment ``cfg`` describes; call it from your own ``@hydra.main`` if you like.
+
+    Within a multirun watched by `PooledMultirun`, a multi-GPU job is only queued and
+    None is returned; it runs with the others when the multirun ends.
+    """
     container = OmegaConf.to_container(cfg, resolve=True)  # resolves ${hydra:...} here
     cfg = OmegaConf.create(container)
     slots = _slots(cfg.get("launcher"))
@@ -388,7 +459,17 @@ def run(cfg: DictConfig) -> pd.DataFrame:
         return experiment.run(progress=cfg.get("progress", True))
     experiment = build_experiment(cfg)
     _check_resume(experiment, cfg.get("force", False))
-    return _run_parallel(container, experiment, slots, cfg.get("progress", True))
+    progress = cfg.get("progress", True)
+    if _pending is not None:
+        if _pending and _pending[0][2] != slots:
+            raise ValueError(
+                f"the jobs of a multirun share one worker pool, but this job's launcher "
+                f"slots {slots} differ from {_pending[0][2]}"
+            )
+        _pending.append((container, experiment, slots, progress))
+        log.info("queued %s for the shared worker pool", experiment.output_dir)
+        return None
+    return _run_parallel([(container, experiment)], slots, progress)
 
 
 def _patch_hydra_args_parser() -> None:

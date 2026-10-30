@@ -34,3 +34,7 @@ hydra:
   sweep:
     dir: ${output_root}
     subdir: ${experiment.name}/${model.name}${adcore.subdir:${variant}}
+  callbacks:
+    # In a multirun, every multi-GPU job shares one worker pool.
+    pooled_multirun:
+      _target_: adcore.runner.PooledMultirun
