@@ -110,6 +110,9 @@ class DatasetSpec:
         test_dir: Directory of the ``"test"`` split, relative to the category.
         mask_dir: Directory of the masks, relative to the category. When it lies inside a
             split's directory it is not read as a defect type.
+        holdout_dir: Directory of the ``"holdout"`` split, relative to the category, that
+            thresholds are chosen on; None when the dataset has none. Its frames may be
+            defect-free only, and then need no masks.
     """
 
     name: str
@@ -118,13 +121,15 @@ class DatasetSpec:
     categories: tuple[str, ...]
     test_dir: str = "test"
     mask_dir: str = "ground_truth"
+    holdout_dir: str | None = None
 
 
 # /data/shared-data/public_datasets/raw/MVTec on this machine.
 MVTEC = DatasetSpec("mvtec", "*.png", "{stem}_mask.png", CATEGORIES)
 # VisA in its 1cls layout: /data/shared-data/public_datasets/raw/visa/visa_pytorch.
 VISA = DatasetSpec("visa", "*.JPG", "{stem}.png", VISA_CATEGORIES)
-# MVTec AD 2 as downloaded, tested on test_public (the private test sets have no masks):
+# MVTec AD 2 as downloaded, tested on test_public (the private test sets have no masks),
+# with its defect-free validation/ as the holdout split:
 # /data/shared-data/public_datasets/raw/mvtec_ad_2. Its images are 1-8 MP and their aspect
 # ratio differs per category, so pair it with `ResizeShortSide` rather than a square resize.
 MVTEC_AD2 = DatasetSpec(
@@ -134,6 +139,7 @@ MVTEC_AD2 = DatasetSpec(
     MVTEC_AD2_CATEGORIES,
     test_dir="test_public",
     mask_dir="test_public/ground_truth",
+    holdout_dir="validation",
 )
 # Real-IAD single-view, converted by `adcore.convert_realiad`:
 # /data/shared-data/public_datasets/raw/realiad_1024/realiad_sv. Its images are 1024x1024.
@@ -208,15 +214,27 @@ def default_transform(
     )
 
 
+def split_dir(spec: DatasetSpec, split: str) -> str:
+    """Directory of ``split`` relative to a category: ``spec`` names those of ``"test"``
+    and ``"holdout"``, any other split is its own name."""
+    if split == "test":
+        return spec.test_dir
+    if split == "holdout":
+        if spec.holdout_dir is None:
+            raise ValueError(f"dataset {spec.name!r} has no holdout split")
+        return spec.holdout_dir
+    return split
+
+
 def find_records(
     root: Path, categories: list[str], split: str, spec: DatasetSpec = MVTEC
 ) -> list[dict]:
     """Every frame of ``split``, sorted by (category, defect_type, filename)."""
     records = []
     for category in categories:
-        split_dir = root / category / (spec.test_dir if split == "test" else split)
+        directory = root / category / split_dir(spec, split)
         mask_dir = root / category / spec.mask_dir
-        for defect_dir in sorted(split_dir.iterdir()):
+        for defect_dir in sorted(directory.iterdir()):
             if not defect_dir.is_dir() or defect_dir == mask_dir:
                 continue
             defect_type = defect_dir.name
@@ -247,7 +265,7 @@ class MVTecDataset(Dataset):
     Args:
         root: Directory holding one subdirectory per category.
         category: One name, several, or None for all of them.
-        split: ``"train"`` or ``"test"``.
+        split: ``"train"``, ``"test"`` or ``"holdout"`` (see `DatasetSpec.holdout_dir`).
         transform: A torchvision v2 transform taking ``(image, mask)``.
         image_size: Only used to build the default transform.
         spec: The dataset's layout, e.g. `MVTEC`, `VISA` or `MVTEC_AD2`.

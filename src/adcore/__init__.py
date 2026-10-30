@@ -32,6 +32,7 @@ from adcore.mvtec import (
 )
 from adcore.patchcore import PatchcoreModel
 from adcore.stats import OutputMean
+from adcore.thresholds import QuantileThreshold, Thresholds
 from adcore.tracking import MLflowTracking, load_artifacts, load_runs, upload_sweep
 
 __all__ = [
@@ -55,9 +56,11 @@ __all__ = [
     "OutputMean",
     "PatchCore",
     "PatchcoreModel",
+    "QuantileThreshold",
     "ResizeShortSide",
     "Predictions",
     "Run",
+    "Thresholds",
     "TimmExtractor",
     "VISA",
     "VISA_CATEGORIES",

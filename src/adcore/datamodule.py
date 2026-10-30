@@ -8,6 +8,9 @@
   trained module builds a memory bank from after its gradient epochs. With
   ``support_aug`` each of these frames (few-shot or all of them) also comes as seeded
   augmented views (see `AugmentedSupport`), in both this loader and ``train_dataloader``.
+- ``val_dataloader``: the dataset's holdout split (`adcore.mvtec.DatasetSpec.holdout_dir`)
+  with the test transform, which a fitted module chooses its thresholds on. Empty when the
+  dataset has none, and while fitting unless ``validate_during_fit``.
 - ``test_dataloader``: the (remaining) test split.
 """
 
@@ -168,6 +171,11 @@ class MVTecDataModule(L.LightningDataModule):
             training set. None: no augmentation.
         test_dataset: A prebuilt test split (e.g. a `CachedDataset`) to use instead of
             reading one; experiments pass the same cached split to every run.
+        holdout_dataset: The same for the holdout split.
+        validate_during_fit: Serve the holdout during ``Trainer.fit`` too. Off by default:
+            Lightning validates before ``on_train_epoch_end``, so a memory-bank module
+            would be scored before its bank exists. Run ``Trainer.validate`` after fitting
+            instead.
         batch_size, num_workers: DataLoader settings. A `CachedDataset` is read with
             ``num_workers=0``.
     """
@@ -187,6 +195,8 @@ class MVTecDataModule(L.LightningDataModule):
         train_transform=None,
         spec: DatasetSpec = MVTEC,
         support_aug: AugmentSpec | None = None,
+        holdout_dataset: MVTecDataset | CachedDataset | None = None,
+        validate_during_fit: bool = False,
     ) -> None:
         super().__init__()
         self.root = Path(root)
@@ -201,6 +211,8 @@ class MVTecDataModule(L.LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers
         self._full_test = test_dataset
+        self.holdout: Dataset | None = holdout_dataset
+        self.validate_during_fit = validate_during_fit
         self.reference: Dataset | None = None
         self.train: Dataset | None = None
         self.test: Dataset | None = None
@@ -214,6 +226,10 @@ class MVTecDataModule(L.LightningDataModule):
         test = self._full_test or MVTecDataset(
             self.root, self.category, "test", self.transform, spec=self.spec
         )
+        if self.holdout is None and self.spec.holdout_dir is not None:
+            self.holdout = MVTecDataset(
+                self.root, self.category, "holdout", self.transform, spec=self.spec
+            )
         self.reference = few_shot_subset(train, self.shots, self.seed)
         if self.support_aug is not None:
             aug = self.support_aug
@@ -246,6 +262,13 @@ class MVTecDataModule(L.LightningDataModule):
 
     def reference_dataloader(self) -> DataLoader:
         return self._loader(self.reference)
+
+    def val_dataloader(self) -> DataLoader | list:
+        # An empty list makes Lightning skip validation.
+        fitting = self.trainer is not None and self.trainer.state.fn == "fit"
+        if self.holdout is None or (fitting and not self.validate_during_fit):
+            return []
+        return self._loader(self.holdout)
 
     def test_dataloader(self) -> DataLoader:
         return self._loader(self.test)

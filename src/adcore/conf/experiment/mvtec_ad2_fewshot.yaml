@@ -12,3 +12,7 @@ trainer: {}          # Trainer kwargs for every model
 fpr_limit: 0.05      # AUPRO's FPR limit, as MVTec AD 2 reports it; unset = the module's (0.3)
 # The images are 1-8 MP and not square. Resize the short side, keeping the aspect ratio:
 #   model.transform='{_target_: adcore.default_transform, image_size: 672, multiple: 14}'
+# Image and pixel thresholds are chosen on each category's validation/ (the holdout split)
+# and image/seg F1, precision and recall reported at them. Unset = the module's rule,
+# adcore.QuantileThreshold() (image_fpr 0.05, pixel_fpr 0.01). To change it:
+#   +experiment.threshold='{_target_: adcore.QuantileThreshold, image_fpr: 0.01, pixel_fpr: 0.001}'

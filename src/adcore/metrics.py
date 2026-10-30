@@ -1,4 +1,5 @@
-"""Anomaly-detection metrics: image AUROC / AUPR, and pixel AUROC / AUPR / AUPRO.
+"""Anomaly-detection metrics: image AUROC / AUPR, and pixel AUROC / AUPR / AUPRO, plus
+F1 / precision / recall at a fixed threshold (`binary_counts`, `f1_precision_recall`).
 
 Ported from `synval.metrics.pixel` (the image-level AUROC is new here). The pixel scores
 are re-aggregations of per-image score histograms.
@@ -314,6 +315,46 @@ def image_aupr(labels: np.ndarray, scores: np.ndarray) -> float:
         return float("nan")
     return float(
         average_precision_score(labels, np.asarray(scores, dtype=np.float64).ravel())
+    )
+
+
+class BinaryCounts(NamedTuple):
+    tp: np.ndarray
+    fp: np.ndarray
+    fn: np.ndarray
+
+
+def binary_counts(predicted: np.ndarray, truth: np.ndarray) -> BinaryCounts:
+    """True positives, false positives and false negatives per row of ``(N, ...)`` arrays,
+    so a subset's counts are a sum over its rows."""
+    predicted = np.asarray(predicted, dtype=bool).reshape(len(predicted), -1)
+    truth = np.asarray(truth, dtype=bool).reshape(len(truth), -1)
+    return BinaryCounts(
+        tp=(predicted & truth).sum(axis=1),
+        fp=(predicted & ~truth).sum(axis=1),
+        fn=(~predicted & truth).sum(axis=1),
+    )
+
+
+class F1Metrics(NamedTuple):
+    f1: float
+    precision: float
+    recall: float
+
+
+def f1_precision_recall(tp: int, fp: int, fn: int) -> F1Metrics:
+    """F1, precision and recall from summed counts.
+
+    With no positives in the ground truth all three are NaN. Precision is 0 when nothing
+    was predicted but positives exist, agreeing with the F1 of 0.
+    """
+    if tp + fn == 0:
+        return F1Metrics(float("nan"), float("nan"), float("nan"))
+    precision = tp / (tp + fp) if tp + fp else 0.0
+    return F1Metrics(
+        f1=float(2 * tp / (2 * tp + fp + fn)),
+        precision=float(precision),
+        recall=float(tp / (tp + fn)),
     )
 
 

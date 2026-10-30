@@ -28,17 +28,38 @@ from adcore.metrics import (
     DEFAULT_FPR_LIMIT,
     DEFAULT_N_BINS,
     DEFAULT_PRO_CONNECTIVITY,
+    BinaryCounts,
+    binary_counts,
     build_pixel_histograms,
+    f1_precision_recall,
     image_aupr,
     image_auroc,
     pixel_metrics,
     region_structure,
 )
+from adcore.thresholds import Thresholds, image_values
 
 if TYPE_CHECKING:
     from adcore.module import AnomalyModule
 
-METRICS = ("image_auroc", "image_aupr", "pixel_auroc", "pixel_aupr", "aupro")
+# At the thresholds `score` is given (see `adcore.thresholds`); NaN without them.
+# ``seg_*`` count pixels over the whole subset at once, as MVTec AD 2's SegF1 does.
+THRESHOLD_METRICS = (
+    "image_f1",
+    "image_precision",
+    "image_recall",
+    "seg_f1",
+    "seg_precision",
+    "seg_recall",
+)
+METRICS = (
+    "image_auroc",
+    "image_aupr",
+    "pixel_auroc",
+    "pixel_aupr",
+    "aupro",
+    *THRESHOLD_METRICS,
+)
 # Prefix of a module's own statistics among result columns and MLflow metrics.
 STAT = "stat/"
 
@@ -192,14 +213,18 @@ def score(
     n_bins: int = DEFAULT_N_BINS,
     fpr_limit: float = DEFAULT_FPR_LIMIT,
     pro_connectivity: int = DEFAULT_PRO_CONNECTIVITY,
+    thresholds: dict[str, Thresholds] | None = None,
 ) -> pd.DataFrame:
     """Metrics per category over its whole test set (``defect_type == "all"``) and, with
     ``per_defect``, over each defect type together with the category's good frames.
 
     ``pro_connectivity`` (4 or 8) is how AUPRO splits a mask into defect regions.
+    ``thresholds`` by category gives the `THRESHOLD_METRICS`; categories without one get
+    NaN.
 
     Histograms are built per category so every category gets the full bin resolution
-    over its own score range.
+    over its own score range. Thresholded counts are exact, not binned: a threshold from
+    another split does not fall on the histogram's edges.
     """
     rows = []
     for category in dict.fromkeys(predictions.categories):
@@ -213,6 +238,14 @@ def score(
         defect_types = predictions.defect_types[in_category]
         labels = predictions.labels[in_category]
         image_scores = predictions.image_scores[in_category]
+        threshold = (thresholds or {}).get(category)
+        if threshold is not None:
+            maps = predictions.anomaly_maps[in_category]
+            flagged = image_values(image_scores, maps, threshold.image_source) >= threshold.image
+            image_counts = binary_counts(flagged[:, None], labels[:, None] > 0)
+            pixel_counts = binary_counts(
+                maps >= threshold.pixel, predictions.masks[in_category] > 0
+            )
 
         groups = [("all", np.arange(len(in_category)))]
         if per_defect:
@@ -239,9 +272,24 @@ def score(
                     "pixel_auroc": pixel.auroc,
                     "pixel_aupr": pixel.aupr,
                     "aupro": pixel.aupro,
+                    **(
+                        {
+                            **_thresholded(image_counts, rows_in, "image"),
+                            **_thresholded(pixel_counts, rows_in, "seg"),
+                        }
+                        if threshold is not None
+                        else dict.fromkeys(THRESHOLD_METRICS, np.nan)
+                    ),
                 }
             )
     return pd.DataFrame(rows)
+
+
+def _thresholded(counts: BinaryCounts, rows: np.ndarray, prefix: str) -> dict[str, float]:
+    f1, precision, recall = f1_precision_recall(
+        *(int(c[rows].sum()) for c in counts)
+    )
+    return {f"{prefix}_f1": f1, f"{prefix}_precision": precision, f"{prefix}_recall": recall}
 
 
 def evaluate(

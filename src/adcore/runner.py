@@ -48,7 +48,7 @@ from omegaconf import DictConfig, OmegaConf
 from tqdm.auto import tqdm
 
 from adcore.experiment import FewShotExperiment, Run
-from adcore.module import AnomalyModule
+from adcore.module import AnomalyModule, ThresholdRule
 from adcore.mvtec import MVTEC, MVTEC_AD2, REALIAD, VISA, DatasetSpec
 
 log = logging.getLogger(__name__)
@@ -107,12 +107,20 @@ class ModuleFactory:
 
     ``model.shared`` is built on the first call and passed by name to every module, so
     a backbone loads once per process. ``model.module`` is built fresh for each run.
-    ``fpr_limit``, when given, replaces every module's AUPRO FPR limit.
+    ``fpr_limit``, when given, replaces every module's AUPRO FPR limit, and
+    ``threshold_rule`` its rule for thresholds from the holdout split.
     """
 
-    def __init__(self, model: DictConfig, *, fpr_limit: float | None = None) -> None:
+    def __init__(
+        self,
+        model: DictConfig,
+        *,
+        fpr_limit: float | None = None,
+        threshold_rule: ThresholdRule | None = None,
+    ) -> None:
         self.module = model.module
         self.fpr_limit = fpr_limit
+        self.threshold_rule = threshold_rule
         self.shared = model.get("shared") or {}
         self._objects: dict[str, Any] | None = None
         target = get_object(self.module._target_)
@@ -137,6 +145,8 @@ class ModuleFactory:
         if self.fpr_limit is not None:
             # Set rather than passed: a subclass need not take `fpr_limit` itself.
             module.fpr_limit = self.fpr_limit
+        if self.threshold_rule is not None:
+            module.threshold_rule = self.threshold_rule
         return module
 
 
@@ -209,7 +219,11 @@ def build_experiment(
     categories = experiment.get("categories")
     return FewShotExperiment(
         experiment.root,
-        module_factory=ModuleFactory(model, fpr_limit=experiment.get("fpr_limit")),
+        module_factory=ModuleFactory(
+            model,
+            fpr_limit=experiment.get("fpr_limit"),
+            threshold_rule=_build(experiment.get("threshold")),
+        ),
         categories=list(categories) if categories is not None else None,
         shots=list(experiment.shots),
         seeds=list(experiment.seeds),

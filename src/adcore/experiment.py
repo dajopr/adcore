@@ -1,6 +1,7 @@
 """Few-shot experiments on Lightning: every (category, shots, seed) builds a fresh
-`AnomalyModule`, runs ``Trainer.fit`` on an `MVTecDataModule` and ``Trainer.test`` on the
-category's test split.
+`AnomalyModule`, runs ``Trainer.fit`` on an `MVTecDataModule`, ``Trainer.validate`` on the
+category's holdout split when the dataset has one (the module picks its thresholds
+there, see `adcore.thresholds`) and ``Trainer.test`` on the category's test split.
 
     extractor = TimmExtractor("wide_resnet50_2", out_indices=(2, 3))
     experiment = FewShotExperiment(
@@ -79,6 +80,7 @@ _QUIET = (
     r".*does not have many workers.*",
     r".*smaller than the logging interval.*",
     r".*defined a `validation_step` but have no `val_dataloader`.*",
+    r".*Total length of `list` across ranks is zero.*",  # no validation while fitting
     r".*Consider setting `persistent_workers=True`.*",
     r".*module\(s\) in eval mode at the start of training.*",  # the frozen backbone
     r".*isinstance\(treespec, LeafSpec\)` is deprecated.*",
@@ -136,7 +138,8 @@ class FewShotExperiment:
         spec: The dataset's layout, e.g. `adcore.mvtec.MVTEC` or `adcore.mvtec.VISA`.
         support_aug: Augmented views of each defect-free training frame; see
             `adcore.datamodule.AugmentedSupport`. Full-shot runs are augmented too.
-        cache_test_set: Decode each category's test split once and reuse it for every run.
+        cache_test_set: Decode each category's test split (and holdout split) once and
+            reuse it for every run.
         tracking: Also record every run in MLflow (`adcore.tracking.MLflowTracking`); its
             sweep name defaults to the name of ``output_dir``.
         metadata: Extra entries for ``config.json`` and the sweep's MLflow params.
@@ -329,19 +332,26 @@ class FewShotExperiment:
     def run_category(self, category: str, runs: Sequence[Run]) -> Iterator[dict[str, Any]]:
         """Fit and test ``runs``, all of ``category``, yielding each outcome for `record`.
 
-        The category's test split is decoded once for all of them.
+        The category's test and holdout splits are decoded once for all of them.
         """
-        test = None
+        test = holdout = None
         if self.cache_test_set:
-            test = CachedDataset(
-                MVTecDataset(self.root, category, "test", self.transform, spec=self.spec),
-                num_workers=self.num_workers,
-                batch_size=self.batch_size,
-            )
+            test = self._cached(category, "test")
+            if self.spec.holdout_dir is not None:
+                holdout = self._cached(category, "holdout")
         for run in runs:
-            yield self.run_one(run, test)
+            yield self.run_one(run, test, holdout)
 
-    def datamodule(self, run: Run, test_dataset=None) -> MVTecDataModule:
+    def _cached(self, category: str, split: str) -> CachedDataset:
+        return CachedDataset(
+            MVTecDataset(self.root, category, split, self.transform, spec=self.spec),
+            num_workers=self.num_workers,
+            batch_size=self.batch_size,
+        )
+
+    def datamodule(
+        self, run: Run, test_dataset=None, holdout_dataset=None
+    ) -> MVTecDataModule:
         return MVTecDataModule(
             self.root,
             run.category,
@@ -353,19 +363,20 @@ class FewShotExperiment:
             spec=self.spec,
             support_aug=self.support_aug,
             test_dataset=test_dataset,
+            holdout_dataset=holdout_dataset,
             batch_size=self.batch_size,
             num_workers=self.num_workers,
         )
 
-    def run_one(self, run: Run, test_dataset=None) -> dict[str, Any]:
-        """Fit and test one run; returns its metric rows and per-image scores."""
+    def run_one(self, run: Run, test_dataset=None, holdout_dataset=None) -> dict[str, Any]:
+        """Fit, validate and test one run; returns its metric rows and per-image scores."""
         mlflow_run_id = None
         if self.tracking is not None:
             mlflow_run_id = self.tracking.start_run(
                 self.start_sweep(), self.sweep, run, self.output_dir
             )
         try:
-            outcome = self._fit_and_test(run, test_dataset, mlflow_run_id)
+            outcome = self._fit_and_test(run, test_dataset, holdout_dataset, mlflow_run_id)
         except BaseException:
             if mlflow_run_id is not None:
                 self.tracking.fail_run(mlflow_run_id)
@@ -376,11 +387,11 @@ class FewShotExperiment:
         return outcome
 
     def _fit_and_test(
-        self, run: Run, test_dataset, mlflow_run_id: str | None
+        self, run: Run, test_dataset, holdout_dataset, mlflow_run_id: str | None
     ) -> dict[str, Any]:
         with _quiet_lightning():
             L.seed_everything(run.seed, verbose=False)
-            datamodule = self.datamodule(run, test_dataset)
+            datamodule = self.datamodule(run, test_dataset, holdout_dataset)
             module = self.module_factory(run)
             trainer = self.trainer(run, mlflow_run_id)
 
@@ -390,6 +401,13 @@ class FewShotExperiment:
                 trainer.fit(module, datamodule=datamodule)
             fit_seconds = perf_counter() - start
 
+            # The fitted module scores the holdout and sets its thresholds from it.
+            start = perf_counter()
+            datamodule.setup("validate")
+            if datamodule.holdout is not None:
+                trainer.validate(module, datamodule=datamodule, verbose=False)
+            val_seconds = perf_counter() - start
+
             start = perf_counter()
             trainer.test(module, datamodule=datamodule, verbose=False)
             test_seconds = perf_counter() - start
@@ -398,6 +416,7 @@ class FewShotExperiment:
         stats = {f"{STAT}{name}": value for name, value in result.stats.items()}
         pro_connectivity = module.pro_connectivity
         fpr_limit = module.fpr_limit
+        thresholds = module.thresholds.get(run.category)
         del module, trainer
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -412,7 +431,11 @@ class FewShotExperiment:
                 # each FPR limit.
                 "pro_connectivity": pro_connectivity,
                 "fpr_limit": fpr_limit,
+                # Chosen on the holdout split; NaN without one.
+                "image_threshold": thresholds.image if thresholds else np.nan,
+                "pixel_threshold": thresholds.pixel if thresholds else np.nan,
                 "fit_seconds": fit_seconds,
+                "val_seconds": val_seconds,
                 "test_seconds": test_seconds,
                 # The module's stats cover the whole test split, so only its "all" row.
                 **(stats if row["defect_type"] == "all" else {}),
@@ -529,6 +552,9 @@ def results_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
     if "pro_connectivity" in frame:
         # Rows from before the option existed were 4-connected.
         frame["pro_connectivity"] = frame["pro_connectivity"].fillna(4).astype(int)
+    for column in ("image_threshold", "pixel_threshold"):
+        # Rows without a holdout split, or from before thresholds, have none.
+        frame[column] = frame[column].astype(float) if column in frame else np.nan
     if "fpr_limit" in frame:
         # Rows from before the limit was recorded used the default.
         frame["fpr_limit"] = frame["fpr_limit"].fillna(DEFAULT_FPR_LIMIT).astype(float)

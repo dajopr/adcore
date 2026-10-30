@@ -7,6 +7,11 @@ training, or a no-optimizer pass that fills a memory bank (see `adcore.detectors
 end the predictions are scored per category and defect type, logged, and kept as
 ``val_result`` / ``test_result``.
 
+A validation pass also sets ``thresholds``: the module's ``threshold_rule`` applied to the
+val predictions (see `adcore.thresholds`), one image and one pixel threshold per category.
+A later test pass reports F1 / precision / recall at them
+(`adcore.evaluation.THRESHOLD_METRICS`); without a validation pass those are NaN.
+
 Logged metrics are ``{stage}/{metric}`` averaged over categories, and
 ``{stage}/{category}/{metric}`` for each category — so a checkpoint callback can monitor
 ``val/image_auroc``.
@@ -25,6 +30,7 @@ experiment.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import lightning as L
@@ -34,8 +40,10 @@ from torchmetrics import Metric, MetricCollection
 from adcore.evaluation import (
     METRICS,
     STAT,
+    THRESHOLD_METRICS,
     EvalResult,
     PredictionCollector,
+    Predictions,
     encode_artifact,
     score,
 )
@@ -45,6 +53,9 @@ from adcore.metrics import (
     DEFAULT_PRO_CONNECTIVITY,
     region_structure,
 )
+from adcore.thresholds import QuantileThreshold, Thresholds
+
+ThresholdRule = Callable[[Predictions], dict[str, Thresholds]]
 
 
 class AnomalyModule(L.LightningModule):
@@ -62,6 +73,8 @@ class AnomalyModule(L.LightningModule):
             gets its own copy.
         val_stats: Replaces ``stats`` for validation.
         test_stats: Replaces ``stats`` for testing.
+        threshold_rule: Turns the val predictions into per-category ``thresholds``,
+            e.g. `adcore.thresholds.QuantileThreshold`; None keeps no thresholds.
     """
 
     def __init__(
@@ -73,6 +86,7 @@ class AnomalyModule(L.LightningModule):
         stats: MetricCollection | dict[str, Metric] | None = None,
         val_stats: MetricCollection | dict[str, Metric] | None = None,
         test_stats: MetricCollection | dict[str, Metric] | None = None,
+        threshold_rule: ThresholdRule | None = QuantileThreshold(),
     ) -> None:
         super().__init__()
         region_structure(pro_connectivity)  # fail at construction, not after testing
@@ -80,6 +94,8 @@ class AnomalyModule(L.LightningModule):
         self.n_bins = n_bins
         self.fpr_limit = fpr_limit
         self.pro_connectivity = pro_connectivity
+        self.threshold_rule = threshold_rule
+        self.thresholds: dict[str, Thresholds] = {}
         self.val_result: EvalResult | None = None
         self.test_result: EvalResult | None = None
         self._collectors: dict[str, PredictionCollector] = {}
@@ -143,13 +159,17 @@ class AnomalyModule(L.LightningModule):
                 "AnomalyModule scores on a single device; evaluate with devices=1"
             )
         predictions = collector.finish()
+        thresholds = self.thresholds if stage == "test" else None
         metrics = score(
             predictions,
             per_defect=self.per_defect,
             n_bins=self.n_bins,
             fpr_limit=self.fpr_limit,
             pro_connectivity=self.pro_connectivity,
+            thresholds=thresholds,
         )
+        if stage == "val" and self.threshold_rule is not None:
+            self.thresholds = self.threshold_rule(predictions)
         result = EvalResult(
             metrics=metrics, predictions=predictions, stats=self._compute_stats(stage)
         )
@@ -161,11 +181,13 @@ class AnomalyModule(L.LightningModule):
             stats.reset()
 
         overall = result.overall
-        logged = {f"{stage}/{m}": float(overall[m].mean()) for m in METRICS}
+        # The thresholded metrics only when there were thresholds, not as NaN.
+        logged_metrics = [m for m in METRICS if thresholds or m not in THRESHOLD_METRICS]
+        logged = {f"{stage}/{m}": float(overall[m].mean()) for m in logged_metrics}
         if len(overall) > 1:
             for row in overall.to_dict("records"):
                 logged.update(
-                    {f"{stage}/{row['category']}/{m}": float(row[m]) for m in METRICS}
+                    {f"{stage}/{row['category']}/{m}": float(row[m]) for m in logged_metrics}
                 )
         logged.update({f"{stage}/{STAT}{name}": value for name, value in result.stats.items()})
         self.log_dict(logged, batch_size=len(predictions))
