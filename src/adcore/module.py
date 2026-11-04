@@ -167,6 +167,7 @@ class AnomalyModule(L.LightningModule):
             fpr_limit=self.fpr_limit,
             pro_connectivity=self.pro_connectivity,
             thresholds=thresholds,
+            device=self.device,
         )
         if stage == "val" and self.threshold_rule is not None:
             self.thresholds = self.threshold_rule(predictions)

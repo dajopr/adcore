@@ -214,13 +214,15 @@ def score(
     fpr_limit: float = DEFAULT_FPR_LIMIT,
     pro_connectivity: int = DEFAULT_PRO_CONNECTIVITY,
     thresholds: dict[str, Thresholds] | None = None,
+    device: torch.device | str | None = None,
 ) -> pd.DataFrame:
     """Metrics per category over its whole test set (``defect_type == "all"``) and, with
     ``per_defect``, over each defect type together with the category's good frames.
 
     ``pro_connectivity`` (4 or 8) is how AUPRO splits a mask into defect regions.
     ``thresholds`` by category gives the `THRESHOLD_METRICS`; categories without one get
-    NaN.
+    NaN. ``device`` is where to bin pixel scores, which is faster on a GPU and gives the
+    same metrics.
 
     Histograms are built per category so every category gets the full bin resolution
     over its own score range. Thresholded counts are exact, not binned: a threshold from
@@ -234,6 +236,7 @@ def score(
             predictions.anomaly_maps[in_category],
             n_bins=n_bins,
             structure=region_structure(pro_connectivity),
+            device=device,
         )
         defect_types = predictions.defect_types[in_category]
         labels = predictions.labels[in_category]
