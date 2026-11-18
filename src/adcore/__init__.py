@@ -8,10 +8,11 @@ from adcore.datamodule import (
     MVTecDataModule,
     default_rotation,
 )
-from adcore.detectors import PatchCore, upsample_and_blur
+from adcore.detectors import PatchCore, pool_image_score, upsample_and_blur
 from adcore.evaluation import EvalResult, Predictions, evaluate, score
 from adcore.experiment import FewShotExperiment, Run, read_artifacts, summarize, table
 from adcore.extractors import TimmExtractor
+from adcore.hf_extractor import HFViTExtractor
 from adcore.metrics import ADMetrics, compute_metrics, image_aupr, region_structure
 from adcore.module import AnomalyModule
 from adcore.mvtec import (
@@ -45,6 +46,7 @@ __all__ = [
     "DatasetSpec",
     "EvalResult",
     "FewShotExperiment",
+    "HFViTExtractor",
     "MLflowTracking",
     "MVTEC",
     "MVTEC_AD2",
@@ -72,6 +74,7 @@ __all__ = [
     "image_aupr",
     "load_artifacts",
     "load_runs",
+    "pool_image_score",
     "score",
     "split_by_defect_type",
     "read_artifacts",

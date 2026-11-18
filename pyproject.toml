@@ -21,6 +21,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+hf = [
+    "transformers>=5.17.0",
+]
 track = [
     "mlflow>=3",
     "plotly>=6",

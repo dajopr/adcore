@@ -42,6 +42,27 @@ def upsample_and_blur(
     return anomaly_map
 
 
+IMAGE_POOLS = ("top1pct", "max")
+
+
+def pool_image_score(anomaly_map: torch.Tensor, pool: str = "top1pct", margin: int = 0) -> torch.Tensor:
+    """Image scores ``(B,)`` from ``(B, 1, H, W)`` anomaly maps.
+
+    ``pool`` is ``"top1pct"``, the mean of the top 1% of pixels (SubspaceAD's image
+    score), or ``"max"``. ``margin`` pixels at each side are left out first, e.g. to
+    ignore border hot spots; the map itself is unchanged.
+    """
+    if pool not in IMAGE_POOLS:
+        raise ValueError(f"pool must be one of {IMAGE_POOLS}, got {pool!r}")
+    if margin:
+        anomaly_map = anomaly_map[..., margin:-margin, margin:-margin]
+    pixel_scores = anomaly_map.flatten(1)
+    if pool == "max":
+        return pixel_scores.amax(dim=1)
+    k = max(1, round(0.01 * pixel_scores.shape[1]))
+    return pixel_scores.topk(k, dim=1).values.mean(dim=1)
+
+
 class PatchCore(AnomalyModule):
     """PatchCore over any feature extractor.
 

@@ -8,11 +8,12 @@ few-shot experiments.
 | module | what |
 | --- | --- |
 | `adcore.module` | `AnomalyModule`: a `LightningModule` whose val/test steps collect predictions and score them per category and defect type, plus an `artifacts` hook for per-run files |
-| `adcore.detectors` | `PatchCore`: extractor + memory bank, fitted in one optimizer-free epoch |
+| `adcore.detectors` | `PatchCore`: extractor + memory bank, fitted in one optimizer-free epoch; `upsample_and_blur`, `pool_image_score` |
 | `adcore.patchcore` | `PatchcoreModel`: memory bank + nearest-neighbour scoring on an already extracted `(B, C, H, W)` embedding (adapted from [anomalib](https://github.com/open-edge-platform/anomalib)) |
 | `adcore.coreset` | k-center greedy coreset subsampling (adapted from [anomalib](https://github.com/open-edge-platform/anomalib)) |
 | `adcore.stats` | `OutputMean` and the `Metric` convention for a module's own val/test statistics |
 | `adcore.extractors` | `TimmExtractor`: frozen timm backbone → patch embedding |
+| `adcore.hf_extractor` | `HFViTExtractor`: frozen Hugging Face ViT hidden states (mean or concatenated) → patch tokens, with in-memory and on-disk feature caches (`hf` extra) |
 | `adcore.datamodule` | `MVTecDataModule` (few-shot, optional anomalous training frames), `CachedDataset` |
 | `adcore.mvtec` | `MVTecDataset`, `few_shot_subset`, `split_by_defect_type` |
 | `adcore.metrics` | image AUROC, pixel AUROC / AUPR / AUPRO from per-image histograms |
