@@ -1,6 +1,7 @@
 """Core anomaly detection on Lightning: PatchCore, MVTec AD / VisA / MVTec AD 2 loading, metrics, evaluation,
 few-shot experiments and their tracking in MLflow."""
 
+from adcore.bootstrap import paired_bootstrap
 from adcore.datamodule import (
     AugmentedSupport,
     AugmentSpec,
@@ -9,7 +10,7 @@ from adcore.datamodule import (
     default_rotation,
 )
 from adcore.detectors import PatchCore, pool_image_score, upsample_and_blur
-from adcore.evaluation import EvalResult, Predictions, evaluate, score
+from adcore.evaluation import EvalResult, Predictions, best_f1_scores, evaluate, score
 from adcore.experiment import FewShotExperiment, Run, read_artifacts, summarize, table
 from adcore.extractors import TimmExtractor
 from adcore.hf_extractor import HFViTExtractor
@@ -74,6 +75,8 @@ __all__ = [
     "image_aupr",
     "load_artifacts",
     "load_runs",
+    "paired_bootstrap",
+    "best_f1_scores",
     "pool_image_score",
     "score",
     "split_by_defect_type",

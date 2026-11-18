@@ -38,12 +38,14 @@ import torch
 from torchmetrics import Metric, MetricCollection
 
 from adcore.evaluation import (
+    BEST_F1_METRICS,
     METRICS,
     STAT,
     THRESHOLD_METRICS,
     EvalResult,
     PredictionCollector,
     Predictions,
+    best_f1_scores,
     encode_artifact,
     score,
 )
@@ -75,6 +77,8 @@ class AnomalyModule(L.LightningModule):
         test_stats: Replaces ``stats`` for testing.
         threshold_rule: Turns the val predictions into per-category ``thresholds``,
             e.g. `adcore.thresholds.QuantileThreshold`; None keeps no thresholds.
+        best_f1: Also give the test metrics `adcore.evaluation.BEST_F1_METRICS`, the
+            image and pixel F1 at their best thresholds on the test set itself.
     """
 
     def __init__(
@@ -87,6 +91,7 @@ class AnomalyModule(L.LightningModule):
         val_stats: MetricCollection | dict[str, Metric] | None = None,
         test_stats: MetricCollection | dict[str, Metric] | None = None,
         threshold_rule: ThresholdRule | None = QuantileThreshold(),
+        best_f1: bool = False,
     ) -> None:
         super().__init__()
         region_structure(pro_connectivity)  # fail at construction, not after testing
@@ -95,6 +100,7 @@ class AnomalyModule(L.LightningModule):
         self.fpr_limit = fpr_limit
         self.pro_connectivity = pro_connectivity
         self.threshold_rule = threshold_rule
+        self.best_f1 = best_f1
         self.thresholds: dict[str, Thresholds] = {}
         self.val_result: EvalResult | None = None
         self.test_result: EvalResult | None = None
@@ -171,6 +177,11 @@ class AnomalyModule(L.LightningModule):
         )
         if stage == "val" and self.threshold_rule is not None:
             self.thresholds = self.threshold_rule(predictions)
+        # The holdout (val) split is defect-free, so it has no F1
+        best_f1 = self.best_f1 and stage == "test"
+        if best_f1:
+            f1 = best_f1_scores(predictions, metrics, n_bins=self.n_bins, device=self.device)
+            metrics = metrics.merge(f1, on=["category", "defect_type"])
         result = EvalResult(
             metrics=metrics, predictions=predictions, stats=self._compute_stats(stage)
         )
@@ -184,6 +195,8 @@ class AnomalyModule(L.LightningModule):
         overall = result.overall
         # The thresholded metrics only when there were thresholds, not as NaN.
         logged_metrics = [m for m in METRICS if thresholds or m not in THRESHOLD_METRICS]
+        if best_f1:
+            logged_metrics += list(BEST_F1_METRICS)
         logged = {f"{stage}/{m}": float(overall[m].mean()) for m in logged_metrics}
         if len(overall) > 1:
             for row in overall.to_dict("records"):

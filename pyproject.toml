@@ -38,6 +38,7 @@ run = [
 adcore-convert-realiad = "adcore.convert_realiad:main"
 adcore-convert-visa = "adcore.convert_visa:main"
 adcore-dashboard = "adcore.dashboard:main"
+adcore-progress = "adcore.progress:main"
 adcore-run = "adcore.runner:main"
 
 [build-system]

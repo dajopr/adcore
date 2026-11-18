@@ -37,7 +37,7 @@ from typing import Literal, NamedTuple
 import numpy as np
 import torch
 from scipy import ndimage
-from sklearn.metrics import average_precision_score, roc_auc_score
+from sklearn.metrics import average_precision_score, precision_recall_curve, roc_auc_score
 
 log = logging.getLogger(__name__)
 
@@ -357,6 +357,33 @@ def image_aupr(labels: np.ndarray, scores: np.ndarray) -> float:
     return float(
         average_precision_score(labels, np.asarray(scores, dtype=np.float64).ravel())
     )
+
+
+def image_f1_max(labels: np.ndarray, scores: np.ndarray) -> float:
+    """Image F1 at the threshold that maximises it on these scores: an upper bound on
+    what a fixed threshold reaches, needing no threshold from elsewhere."""
+    if len(np.unique(labels)) < 2:
+        return float("nan")
+    precision, recall, _ = precision_recall_curve(labels, scores)
+    f1 = np.divide(
+        2 * precision * recall,
+        precision + recall,
+        out=np.zeros_like(precision),
+        where=precision + recall > 0,
+    )
+    return float(f1.max())
+
+
+def pixel_f1_max(positive: np.ndarray, negative: np.ndarray) -> float:
+    """Pixel F1 at its best threshold on the histogram grid, from per-image
+    ``(n_images, n_bins)`` positive / negative pixel counts (`build_pixel_histograms`):
+    within one bin of the exact maximum."""
+    # Counts at or above each threshold, highest first; F1 = 2 TP / (TP + FP + P)
+    tp = np.cumsum(positive.sum(axis=0)[::-1])
+    fp = np.cumsum(negative.sum(axis=0)[::-1])
+    if tp[-1] == 0:
+        return float("nan")
+    return float(np.max(2 * tp / (tp + fp + tp[-1])))
 
 
 class BinaryCounts(NamedTuple):

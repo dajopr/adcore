@@ -17,7 +17,9 @@ few-shot experiments.
 | `adcore.datamodule` | `MVTecDataModule` (few-shot, optional anomalous training frames), `CachedDataset` |
 | `adcore.mvtec` | `MVTecDataset`, `few_shot_subset`, `split_by_defect_type` |
 | `adcore.metrics` | image AUROC, pixel AUROC / AUPR / AUPRO from per-image histograms |
-| `adcore.evaluation` | `Predictions`, `score`, and `evaluate(module, loader)` for a one-call `Trainer.test` |
+| `adcore.evaluation` | `Predictions`, `score`, `best_f1_scores` (image / pixel F1 at their best thresholds; `AnomalyModule(best_f1=True)` adds them to the test metrics), and `evaluate(module, loader)` for a one-call `Trainer.test` |
+| `adcore.bootstrap` | `paired_bootstrap`: image-AUROC confidence intervals and paired differences over the test images, from output directories' `scores/` |
+| `adcore.progress` | `adcore-progress`: finished runs, rate and ETA of output directories |
 | `adcore.experiment` | `FewShotExperiment`: categories × shots × seeds, resumable, plus `summarize` / `table` / `read_artifacts` |
 | `adcore.tracking` | `MLflowTracking`: record sweeps in a local MLflow store; `upload_sweep`, `load_runs`, `load_artifacts` |
 | `adcore.dashboard` | `adcore-dashboard`: Streamlit app comparing sweeps by architecture |

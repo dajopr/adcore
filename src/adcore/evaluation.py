@@ -34,6 +34,8 @@ from adcore.metrics import (
     f1_precision_recall,
     image_aupr,
     image_auroc,
+    image_f1_max,
+    pixel_f1_max,
     pixel_metrics,
     region_structure,
 )
@@ -282,6 +284,51 @@ def score(
                         }
                         if threshold is not None
                         else dict.fromkeys(THRESHOLD_METRICS, np.nan)
+                    ),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+BEST_F1_METRICS = ("image_f1_max", "pixel_f1_max")
+
+
+def best_f1_scores(
+    predictions: Predictions,
+    metrics: pd.DataFrame,
+    n_bins: int = DEFAULT_N_BINS,
+    device: torch.device | str | None = None,
+) -> pd.DataFrame:
+    """`BEST_F1_METRICS` for each (category, defect_type) row of ``metrics`` (as `score`
+    returns it): "all" is the whole category, a defect type its frames with the
+    category's good ones. Each is the F1 at its best threshold on these predictions
+    (`image_f1_max`, `pixel_f1_max`), so unlike the `THRESHOLD_METRICS` it needs no
+    thresholds, but it is an upper bound on what a fixed threshold reaches."""
+    rows = []
+    for category in dict.fromkeys(metrics["category"]):
+        in_category = np.flatnonzero(predictions.categories == category)
+        histograms = build_pixel_histograms(
+            predictions.masks[in_category],
+            predictions.anomaly_maps[in_category],
+            n_bins=n_bins,
+            device=device,
+        )
+        labels = predictions.labels[in_category]
+        image_scores = predictions.image_scores[in_category]
+        defect_types = predictions.defect_types[in_category]
+        for defect_type in metrics.loc[metrics["category"] == category, "defect_type"]:
+            selected = (
+                np.arange(len(in_category))
+                if defect_type == "all"
+                else np.flatnonzero((defect_types == defect_type) | (defect_types == "good"))
+            )
+            rows.append(
+                {
+                    "category": category,
+                    "defect_type": defect_type,
+                    "image_f1_max": image_f1_max(labels[selected], image_scores[selected]),
+                    "pixel_f1_max": pixel_f1_max(
+                        histograms.positive[selected], histograms.negative[selected]
                     ),
                 }
             )
